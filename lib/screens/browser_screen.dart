@@ -69,6 +69,58 @@ class BrowserScreenState extends State<BrowserScreen> {
         lower.contains('ad_tag=');
   }
 
+  /// Erkennt interne Video-Transport-Chunks und Segmente (z.B. beim Vor- und Zurückspulen).
+  /// Verhindert, dass für jeden Spulschritt ein einzelnes 2-Sekunden-Snippet als Video erkannt wird!
+  static bool isSegmentChunk(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('/seg-') ||
+        lower.contains('/segment') ||
+        lower.contains('frag-') ||
+        lower.contains('fragment') ||
+        lower.contains('.ts') ||
+        lower.contains('.m4s') ||
+        lower.contains('.m4a') ||
+        lower.contains('sq/') ||
+        lower.contains('/chunks/') ||
+        lower.contains('range=') ||
+        lower.contains('bytes=') ||
+        lower.contains('start=') ||
+        lower.contains('offset=') ||
+        lower.contains('&t=') ||
+        lower.contains('?t=') ||
+        (lower.contains('.m3u8') && (lower.contains('seg-') || lower.contains('chunklist')));
+  }
+
+  /// Bereinigt und normalisiert Video-URLs von Spul-, Byte-Range- und Zeitparametern,
+  /// sodass mehrere Anfragen desselben Videos zu einer einzigen Master-URL zusammengeführt werden.
+  static String normalizeVideoUrl(String rawUrl) {
+    try {
+      final uri = Uri.parse(rawUrl);
+      final queryParams = Map<String, String>.from(uri.queryParameters);
+      const stripKeys = [
+        'start',
+        'begin',
+        't',
+        'time',
+        'range',
+        'bytes',
+        'offset',
+        'ir',
+        'pos',
+        'viewkey_t'
+      ];
+      for (final key in stripKeys) {
+        queryParams.remove(key);
+      }
+      final normalized = uri.replace(
+        queryParameters: queryParams.isEmpty ? null : queryParams,
+      );
+      return normalized.toString();
+    } catch (_) {
+      return rawUrl;
+    }
+  }
+
   Future<bool> handleBackPress() async {
     if (_webViewController != null && await _webViewController!.canGoBack()) {
       await _webViewController!.goBack();
@@ -107,7 +159,7 @@ class BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
-  /// Injektionsskript mit Anti-Werbung, Teaser-Erkennung & Feed-Direkt-Puffer-Buttons
+  /// Injektionsskript mit Anti-Werbung, Teaser-Erkennung, Pornhub/Stream-Master-Extraktion & Feed-Direkt-Puffer-Buttons
   static const String _videoDetectionScript = """
     (function() {
       function resolveUrl(url) {
@@ -116,6 +168,19 @@ class BrowserScreenState extends State<BrowserScreen> {
           return new URL(url, window.location.href).href;
         } catch(e) {
           return url;
+        }
+      }
+
+      function cleanVideoUrl(rawUrl) {
+        try {
+          var u = new URL(rawUrl, window.location.href);
+          var removeParams = ['start', 'begin', 't', 'time', 'range', 'bytes', 'offset', 'ir', 'pos'];
+          for (var i = 0; i < removeParams.length; i++) {
+            u.searchParams.delete(removeParams[i]);
+          }
+          return u.href;
+        } catch(e) {
+          return rawUrl;
         }
       }
 
@@ -131,38 +196,186 @@ class BrowserScreenState extends State<BrowserScreen> {
                lower.indexOf('/video_ads/') !== -1;
       }
 
-      function initPuffer() {
-        if (window.__pufferInjected) return;
-        window.__pufferInjected = true;
+      function isSegment(url) {
+        if (!url) return false;
+        var u = url.toLowerCase();
+        return u.indexOf('/seg-') !== -1 ||
+               u.indexOf('/segment') !== -1 ||
+               u.indexOf('frag-') !== -1 ||
+               u.indexOf('fragment') !== -1 ||
+               u.indexOf('.ts') !== -1 ||
+               u.indexOf('.m4s') !== -1 ||
+               u.indexOf('.m4a') !== -1 ||
+               u.indexOf('sq/') !== -1 ||
+               u.indexOf('/chunks/') !== -1 ||
+               u.indexOf('range=') !== -1 ||
+               u.indexOf('bytes=') !== -1 ||
+               u.indexOf('start=') !== -1 ||
+               u.indexOf('&t=') !== -1 ||
+               u.indexOf('?t=') !== -1 ||
+               u.indexOf('offset=') !== -1;
+      }
 
-        function reportVideo(videoSrc, title, isPreview, duration) {
-          var cleanUrl = resolveUrl(videoSrc);
-          if (!cleanUrl || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('javascript:')) return;
-          if (isAdSource(cleanUrl)) return; // Werbevideos ignorieren!
+      function reportVideo(videoSrc, title, isPreview, duration, isMaster, quality) {
+        var cleanUrl = resolveUrl(videoSrc);
+        if (!cleanUrl || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('javascript:')) return;
+        if (isAdSource(cleanUrl)) return;
+        if (!isMaster && isSegment(cleanUrl)) return; // Transport Chunks & Seek-Segmente NIEMALS melden!
 
-          try {
-            if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
-              window.flutter_inappwebview.callHandler('pufferVideoDetected', {
-                videoUrl: cleanUrl,
-                pageUrl: window.location.href,
-                pageTitle: document.title || title || 'Web-Video',
-                isPreview: !!isPreview,
-                duration: duration || 0
-              });
-            }
-          } catch(e) {}
+        cleanUrl = cleanVideoUrl(cleanUrl);
+
+        try {
+          if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+            window.flutter_inappwebview.callHandler('pufferVideoDetected', {
+              videoUrl: cleanUrl,
+              pageUrl: window.location.href,
+              pageTitle: title || document.title || 'Web-Video',
+              isPreview: !!isPreview,
+              duration: duration || 0,
+              isMaster: !!isMaster,
+              quality: quality || ''
+            });
+          }
+        } catch(e) {}
+      }
+
+      function parseAndReportDefs(defs) {
+        if (!Array.isArray(defs)) return;
+        for (var i = 0; i < defs.length; i++) {
+          var d = defs[i];
+          if (!d) continue;
+          var vUrl = d.videoUrl || d.url;
+          if (!vUrl || typeof vUrl !== 'string') continue;
+          vUrl = vUrl.replace(/\\\\\\//g, '/').replace(/\\//g, '/');
+          if (isAdSource(vUrl) || isSegment(vUrl)) continue;
+
+          var format = (d.format || '').toLowerCase();
+          var qual = d.quality;
+          if (Array.isArray(qual)) qual = qual.join('/');
+          var qStr = qual ? ('' + qual) : '';
+          if (qStr && qStr.indexOf('p') === -1 && !isNaN(qStr)) qStr += 'p';
+
+          var title = document.title || 'Hauptvideo';
+          if (format === 'mp4' || vUrl.indexOf('.mp4') !== -1) {
+            reportVideo(vUrl, title, false, 0, true, qStr || 'MP4');
+          } else if (format === 'hls' || vUrl.indexOf('.m3u8') !== -1) {
+            reportVideo(vUrl, title, false, 0, true, qStr ? (qStr + ' HLS') : 'HLS');
+          }
         }
+      }
+
+      function extractMediaDefinitions() {
+        try {
+          // 1. window Globals (flashvars_..., player_..., media_0, etc.)
+          for (var key in window) {
+            if (key.indexOf('flashvars') !== -1 || key.indexOf('player_mp4') !== -1 || key === 'media_0') {
+              try {
+                var obj = window[key];
+                if (obj && obj.mediaDefinitions) {
+                  parseAndReportDefs(obj.mediaDefinitions);
+                }
+              } catch(e) {}
+            }
+          }
+
+          // 2. <script> Tags nach JSON & mediaDefinitions durchsuchen
+          var scripts = document.getElementsByTagName('script');
+          for (var s = 0; s < scripts.length; s++) {
+            var text = scripts[s].textContent || '';
+            if (text.indexOf('mediaDefinitions') !== -1) {
+              var match = text.match(/mediaDefinitions\\s*:\\s*(\\[\\s*\\{[\\s\\S]*?\\}\\s*\\])/);
+              if (match && match[1]) {
+                try {
+                  var parsed = JSON.parse(match[1]);
+                  if (Array.isArray(parsed)) {
+                    parseAndReportDefs(parsed);
+                  }
+                } catch(e) {
+                  extractUrlsFromScriptText(text);
+                }
+              } else {
+                extractUrlsFromScriptText(text);
+              }
+            } else if (text.indexOf('flashvars_') !== -1) {
+              extractUrlsFromScriptText(text);
+            }
+          }
+        } catch(e) {}
+      }
+
+      function extractUrlsFromScriptText(text) {
+        try {
+          var regex = /"videoUrl"\\s*:\\s*"([^"]+)"/g;
+          var m;
+          while ((m = regex.exec(text)) !== null) {
+            var u = m[1].replace(/\\\\\\//g, '/').replace(/\\//g, '/');
+            if (u && !isAdSource(u) && !isSegment(u)) {
+              reportVideo(u, document.title || 'Hauptvideo', false, 0, true, 'HD');
+            }
+          }
+        } catch(e) {}
+      }
+
+      // 3. Network Fetch / XHR Interception für dynamische Video-APIs (z.B. /video/get_media)
+      if (!window.__pufferNetworkIntercepted) {
+        window.__pufferNetworkIntercepted = true;
+        var origFetch = window.fetch;
+        if (origFetch) {
+          window.fetch = function() {
+            return origFetch.apply(this, arguments).then(function(res) {
+              try {
+                var url = res.url || '';
+                if (url.indexOf('get_media') !== -1 || url.indexOf('playback') !== -1 || url.indexOf('playlist') !== -1) {
+                  res.clone().json().then(function(data) {
+                    if (data && data.mediaDefinitions) {
+                      parseAndReportDefs(data.mediaDefinitions);
+                    }
+                  }).catch(function(){});
+                }
+              } catch(e) {}
+              return res;
+            });
+          };
+        }
+
+        var origXhrOpen = XMLHttpRequest.prototype.open;
+        XMLHttpRequest.prototype.open = function(method, url) {
+          this.__pufferUrl = url;
+          return origXhrOpen.apply(this, arguments);
+        };
+        var origXhrSend = XMLHttpRequest.prototype.send;
+        XMLHttpRequest.prototype.send = function() {
+          this.addEventListener('load', function() {
+            try {
+              var url = this.__pufferUrl || '';
+              if (url.indexOf('get_media') !== -1 || url.indexOf('playback') !== -1 || url.indexOf('playlist') !== -1) {
+                var data = JSON.parse(this.responseText);
+                if (data && data.mediaDefinitions) {
+                  parseAndReportDefs(data.mediaDefinitions);
+                }
+              }
+            } catch(e) {}
+          });
+          return origXhrSend.apply(this, arguments);
+        };
+      }
+
+      function initPuffer() {
+        if (window.__pufferInjected) {
+          extractMediaDefinitions();
+          return;
+        }
+        window.__pufferInjected = true;
 
         function scanPerformanceMedia() {
           try {
             var entries = window.performance.getEntriesByType('resource');
             for (var i = 0; i < entries.length; i++) {
               var name = entries[i].name;
-              if (name && name.match(/\\.(mp4|webm|m4v)(\\?.*)?\$/i)) {
-                if (!isAdSource(name)) {
-                  var isPrev = name.toLowerCase().indexOf('preview') !== -1 || name.toLowerCase().indexOf('teaser') !== -1;
-                  reportVideo(name, document.title, isPrev, 0);
-                }
+              if (!name || isAdSource(name) || isSegment(name)) continue;
+              if (name.match(/\\.(mp4|webm|m4v)(\\?.*)?\$/i) || name.match(/\\.m3u8(\\?.*)?\$/i)) {
+                var isPrev = name.toLowerCase().indexOf('preview') !== -1 || name.toLowerCase().indexOf('teaser') !== -1;
+                reportVideo(name, document.title, isPrev, 0, false, '');
               }
             }
           } catch(e) {}
@@ -175,7 +388,6 @@ class BrowserScreenState extends State<BrowserScreen> {
             var a = links[i];
             if (a.dataset.pufferCardAttached === 'true') continue;
 
-            // Prüfen, ob der Link ein Vorschaubild oder ein Video enthält
             var hasMedia = a.querySelector('img, video, canvas');
             if (!hasMedia && a.offsetHeight < 45) continue;
             a.dataset.pufferCardAttached = 'true';
@@ -227,16 +439,17 @@ class BrowserScreenState extends State<BrowserScreen> {
           var dur = video.duration || 0;
           var isPreview = (isLoop && isMuted && dur > 0 && dur <= 25) || (src && (src.indexOf('preview') !== -1 || src.indexOf('teaser') !== -1));
 
-          if (src && !isAdSource(src)) {
-            reportVideo(src, document.title, isPreview, dur);
+          if (src && !isAdSource(src) && !isSegment(src)) {
+            reportVideo(src, document.title, isPreview, dur, false, '');
           }
 
           video.addEventListener('play', function() {
+            extractMediaDefinitions();
             var playSrc = video.currentSrc || video.src;
-            if (playSrc && !isAdSource(playSrc)) {
+            if (playSrc && !isAdSource(playSrc) && !isSegment(playSrc)) {
               var pDur = video.duration || 0;
               var pPrev = (video.loop && video.muted && pDur > 0 && pDur <= 25);
-              reportVideo(playSrc, document.title, pPrev, pDur);
+              reportVideo(playSrc, document.title, pPrev, pDur, false, '');
             }
             scanPerformanceMedia();
           });
@@ -296,6 +509,7 @@ class BrowserScreenState extends State<BrowserScreen> {
         }
 
         function scanAll() {
+          extractMediaDefinitions();
           var videos = document.querySelectorAll('video');
           for (var i = 0; i < videos.length; i++) {
             attachCheckboxToVideo(videos[i]);
@@ -305,6 +519,14 @@ class BrowserScreenState extends State<BrowserScreen> {
         }
 
         scanAll();
+
+        // Regelmäßiger Scan in den ersten Sekunden nach Laden (für dynamische Player)
+        var scanCount = 0;
+        var intervalId = setInterval(function() {
+          scanAll();
+          scanCount++;
+          if (scanCount >= 6) clearInterval(intervalId);
+        }, 1500);
 
         var observer = new MutationObserver(function() {
           scanAll();
@@ -323,14 +545,20 @@ class BrowserScreenState extends State<BrowserScreen> {
   """;
 
   void _onVideoDetected(Map<String, dynamic> data) {
-    final videoUrl = data['videoUrl'] as String?;
-    if (videoUrl == null || videoUrl.isEmpty) return;
-    if (isAdUrl(videoUrl)) return; // Werbe-Videos strikt verwerfen!
+    final rawUrl = data['videoUrl'] as String?;
+    if (rawUrl == null || rawUrl.isEmpty) return;
+    if (isAdUrl(rawUrl)) return; // Werbe-Videos strikt verwerfen!
 
+    final isMaster = data['isMaster'] as bool? ?? false;
+    // Segmente und Seek-Chunks verwerfen (außer es ist ein expliziter Master-Stream)
+    if (!isMaster && isSegmentChunk(rawUrl)) return;
+
+    final videoUrl = normalizeVideoUrl(rawUrl);
     final pageUrl = data['pageUrl'] as String? ?? _currentUrl;
     final pageTitle = data['pageTitle'] as String? ?? _currentTitle;
     final isPreview = data['isPreview'] as bool? ?? false;
     final duration = (data['duration'] is num) ? (data['duration'] as num).toDouble() : null;
+    final quality = data['quality'] as String? ?? '';
 
     if (!_detectedVideos.containsKey(videoUrl)) {
       final item = DetectedVideo(
@@ -341,11 +569,21 @@ class BrowserScreenState extends State<BrowserScreen> {
         isPreview: isPreview,
         duration: duration,
         isProbingSize: true,
+        isMaster: isMaster,
+        quality: quality,
       );
       setState(() {
         _detectedVideos[videoUrl] = item;
       });
       _probeVideoSize(item);
+    } else {
+      final existing = _detectedVideos[videoUrl]!;
+      if (isMaster && !existing.isMaster) {
+        setState(() {
+          existing.isMaster = true;
+          if (quality.isNotEmpty) existing.quality = quality;
+        });
+      }
     }
   }
 
@@ -395,9 +633,28 @@ class BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Sortiere nach Dateigröße (größtes Video zuerst!), dann Nicht-Vorschau vor Vorschau
+    int qualityRank(String q) {
+      if (q.contains('1080')) return 1080;
+      if (q.contains('720')) return 720;
+      if (q.contains('480')) return 480;
+      if (q.contains('360')) return 360;
+      if (q.contains('240')) return 240;
+      return 0;
+    }
+
+    // Sortiere: Master-Videos (aus mediaDefinitions / Stream-Manifest) immer ganz nach oben!
+    // Danach nach Dateigröße (größtes Video zuerst!), dann Nicht-Vorschau vor Vorschau.
     final sortedVideos = _detectedVideos.values.toList()
       ..sort((a, b) {
+        if (a.isMaster && !b.isMaster) return -1;
+        if (!a.isMaster && b.isMaster) return 1;
+
+        if (a.isMaster && b.isMaster) {
+          final qA = qualityRank(a.quality);
+          final qB = qualityRank(b.quality);
+          if (qA != qB) return qB.compareTo(qA);
+        }
+
         final aSize = a.fileSizeBytes ?? -1;
         final bSize = b.fileSizeBytes ?? -1;
         if (aSize != bSize) {
@@ -642,17 +899,28 @@ class BrowserScreenState extends State<BrowserScreen> {
                       );
                     }
 
-                    // 2. Echte Video-Streams abfangen
+                    // 2. Transport-Chunks & Segmente beim Spulen verwerfen (kein Spam!)
+                    if (isSegmentChunk(url)) {
+                      return null; // Lässt das interne Abspielen im Web-Player zu, aber erzeugt kein Video-Item
+                    }
+
+                    // 3. Echte Video-Streams abfangen (MP4, WEBM, M4V, M3U8 Master)
                     final lower = url.toLowerCase();
-                    if ((lower.contains('.mp4') || lower.contains('.webm') || lower.contains('.m4v')) &&
+                    if ((lower.contains('.mp4') ||
+                            lower.contains('.webm') ||
+                            lower.contains('.m4v') ||
+                            lower.contains('.m3u8')) &&
                         !lower.startsWith('blob:') &&
                         !lower.startsWith('data:')) {
-                      final isPrev = lower.contains('preview') || lower.contains('teaser') || lower.contains('hover');
+                      final isPrev = lower.contains('preview') ||
+                          lower.contains('teaser') ||
+                          lower.contains('hover');
                       _onVideoDetected({
                         'videoUrl': url,
                         'pageUrl': _currentUrl,
                         'pageTitle': _currentTitle,
                         'isPreview': isPrev,
+                        'isMaster': false,
                       });
                     }
                     return null;
@@ -944,11 +1212,11 @@ class BrowserScreenState extends State<BrowserScreen> {
                                             children: [
                                               Row(
                                                 children: [
-                                                  // Badge: Hauptvideo vs Vorschau
+                                                  // Badge: Master-Stream vs Größtes vs Vorschau vs Snippet
                                                   Container(
                                                     padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                                     decoration: BoxDecoration(
-                                                      color: isLargest
+                                                      color: v.isMaster || isLargest
                                                           ? const Color(0xFF00E676)
                                                           : v.isPreview || (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
                                                               ? Colors.amber.withOpacity(0.2)
@@ -956,15 +1224,17 @@ class BrowserScreenState extends State<BrowserScreen> {
                                                       borderRadius: BorderRadius.circular(4),
                                                     ),
                                                     child: Text(
-                                                      isLargest
-                                                          ? '🏆 Größte Datei (Hauptvideo)'
-                                                          : v.isPreview
-                                                              ? '🎞️ Vorschau'
-                                                              : (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
-                                                                  ? '⚠️ Klein / Snippet'
-                                                                  : '🎬 Video',
+                                                      v.isMaster
+                                                          ? (v.quality.isNotEmpty ? '🏆 Hauptvideo (${v.quality})' : '🏆 Hauptvideo')
+                                                          : isLargest
+                                                              ? '🏆 Größte Datei'
+                                                              : v.isPreview
+                                                                  ? '🎞️ Vorschau'
+                                                                  : (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
+                                                                      ? '⚠️ Klein / Snippet'
+                                                                      : '🎬 Video',
                                                       style: TextStyle(
-                                                        color: isLargest
+                                                        color: v.isMaster || isLargest
                                                             ? Colors.black
                                                             : v.isPreview || (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
                                                                 ? Colors.amberAccent
@@ -1131,6 +1401,8 @@ class DetectedVideo {
   final double? duration;
   int? fileSizeBytes;
   bool isProbingSize;
+  bool isMaster;
+  String quality;
 
   DetectedVideo({
     required this.videoUrl,
@@ -1141,6 +1413,8 @@ class DetectedVideo {
     this.duration,
     this.fileSizeBytes,
     this.isProbingSize = false,
+    this.isMaster = false,
+    this.quality = '',
   });
 
   String get formattedSize {

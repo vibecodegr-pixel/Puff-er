@@ -1,7 +1,7 @@
 name: puffer
 description: "Puff-er: Ressourcenschonender Offline-Video-Puffer mit In-App-Browser, 5h-TTL und Share-Target."
 publish_to: "none"
-version: 0.1.0+1
+version: 0.1.0+11
 
 environment:
   sdk: ">=3.0.0 <4.0.0"

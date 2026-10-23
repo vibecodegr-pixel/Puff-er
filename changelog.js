@@ -1,3 +1,11 @@
+// Version v0.1.011
+// - Pornhub- & Tube-Streaming Deep-Extractor: scannt automatisch mediaDefinitions, flashvars und script-Tags nach echten Master-Streams (1080p, 720p, 480p) und markiert sie als Hauptvideo
+// - Spul-Segment-Spamfilter (Anti-Seek-Duplication): filtert interne 2-Sekunden-Transport-Chunks (seg-, frag-, .ts, .m4s, start=, range=) strikt heraus, sodass beim Hin- und Herspulen im Web-Player null Dummy-Einträge entstehen
+// - URL-Normalisierung: fasst Spul- und Zeitoffset-Parameter zusammen, damit dieselbe Video-Quelle immer als ein konsistenter Eintrag erkannt wird
+// - Native HLS (.m3u8) Download-Engine im BufferService: lädt Playlists, lädt alle Segmente sequentiell herunter und setzt sie zu einer vollständigen, offline abspielbaren Video-Datei zusammen
+// - Automatische Browser-Cookie-Synchronisation: leitet Web-Cookies an den Download-Service weiter, um 403-Forbidden-Fehler von geschützten Streaming-CDNs zu verhindern
+// - Qualität- und Master-Priorisierung: platziert hochauflösende Master-Videos (1080p/720p) und die größte Datei automatisch an erster Stelle mit markanter '🏆 Hauptvideo'-Badge
+
 // Version v0.1.010
 // - Interaktive Zeitleiste im Video-Player: Flüssiges Spulen vor und zurück per Finger-Drag (Scrubbing) mit Slider-Thumb & Live-Zeitstempel
 // - 10-Sekunden-Vor- und Zurückspultasten (Replay 10 / Forward 10) in der Player-Steuerung integriert

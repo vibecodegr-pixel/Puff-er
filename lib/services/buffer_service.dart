@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -136,8 +137,37 @@ class BufferService extends ChangeNotifier {
         lower.contains('vmap');
   }
 
+  Future<Map<String, String>> _buildHeaders({
+    required String videoUrl,
+    String? motherPageUrl,
+  }) async {
+    final headers = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+      'Accept': '*/*',
+      'Accept-Encoding': 'identity',
+    };
+    if (motherPageUrl != null && motherPageUrl.startsWith('http')) {
+      headers['Referer'] = motherPageUrl;
+      final uri = Uri.tryParse(motherPageUrl);
+      if (uri != null && uri.hasScheme && uri.hasAuthority) {
+        headers['Origin'] = '${uri.scheme}://${uri.authority}';
+      }
+      try {
+        final cookies = await CookieManager.instance().getCookies(url: WebUri(motherPageUrl));
+        if (cookies.isNotEmpty) {
+          final cookieHeader = cookies.map((c) => '${c.name}=${c.value}').join('; ');
+          headers['Cookie'] = cookieHeader;
+        }
+      } catch (e) {
+        debugPrint('Konnte Cookies für $motherPageUrl nicht lesen: $e');
+      }
+    }
+    return headers;
+  }
+
   /// Ermittelt die Dateigröße eines Videos über HTTP HEAD oder Range GET (1 Byte),
-  /// ohne das gesamte Video herunterzuladen. Spart massiv Datenvolumen und Akku.
+  /// oder analysiert HLS (.m3u8) Playlists, ohne das gesamte Video herunterzuladen.
   Future<int?> probeVideoSize({
     required String videoUrl,
     String? motherPageUrl,
@@ -147,16 +177,62 @@ class BufferService extends ChangeNotifier {
       return _probedSizes[videoUrl];
     }
 
-    final headers = <String, String>{
-      'User-Agent':
-          'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
-      'Accept': '*/*',
-    };
-    if (motherPageUrl != null && motherPageUrl.startsWith('http')) {
-      headers['Referer'] = motherPageUrl;
-      final uri = Uri.tryParse(motherPageUrl);
-      if (uri != null && uri.hasScheme && uri.hasAuthority) {
-        headers['Origin'] = '${uri.scheme}://${uri.authority}';
+    final headers = await _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
+
+    // HLS Playlist (.m3u8) abfangen und Gesamtdauer / geschätzte Größe analysieren
+    if (videoUrl.contains('.m3u8')) {
+      try {
+        final res = await _dio.get<String>(
+          videoUrl,
+          options: Options(
+            headers: headers,
+            responseType: ResponseType.plain,
+            sendTimeout: const Duration(seconds: 6),
+            receiveTimeout: const Duration(seconds: 6),
+            validateStatus: (s) => s != null && s >= 200 && s < 400,
+          ),
+        );
+        String playlist = res.data ?? '';
+        String mediaUrl = videoUrl;
+
+        // Falls Master-Playlist, ersten/besten Stream holen
+        if (playlist.contains('#EXT-X-STREAM-INF')) {
+          final lines = playlist.split('\n');
+          for (final line in lines) {
+            final trimmed = line.trim();
+            if (trimmed.isNotEmpty && !trimmed.startsWith('#')) {
+              mediaUrl = Uri.parse(videoUrl).resolve(trimmed).toString();
+              final mediaRes = await _dio.get<String>(
+                mediaUrl,
+                options: Options(
+                  headers: headers,
+                  responseType: ResponseType.plain,
+                  sendTimeout: const Duration(seconds: 6),
+                  receiveTimeout: const Duration(seconds: 6),
+                  validateStatus: (s) => s != null && s >= 200 && s < 400,
+                ),
+              );
+              playlist = mediaRes.data ?? '';
+              break;
+            }
+          }
+        }
+
+        // Segmente summieren
+        double totalDur = 0.0;
+        final infMatches = RegExp(r'#EXTINF:([\d.]+)').allMatches(playlist);
+        for (final m in infMatches) {
+          totalDur += double.tryParse(m.group(1) ?? '0') ?? 0;
+        }
+
+        if (totalDur > 0) {
+          // Schätze ~ 2.4 MBit/s (300 KB/s)
+          final estimatedBytes = (totalDur * 300 * 1024).round();
+          _probedSizes[videoUrl] = estimatedBytes;
+          return estimatedBytes;
+        }
+      } catch (e) {
+        debugPrint('HLS-Probe fehlgeschlagen für $videoUrl: $e');
       }
     }
 
@@ -293,62 +369,59 @@ class BufferService extends ChangeNotifier {
       }
 
       final savePath = '${videosDir.path}/puffer_${item.id}$extension';
+      final headers = await _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
 
-      // Wichtig: Referer und Origin mitsenden, damit Web-Server das Video nicht mit 403 / HTML blockieren!
-      final headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
-        'Accept': '*/*',
-        'Accept-Encoding': 'identity',
-      };
-      if (motherPageUrl.isNotEmpty && motherPageUrl.startsWith('http')) {
-        headers['Referer'] = motherPageUrl;
-        final motherUri = Uri.tryParse(motherPageUrl);
-        if (motherUri != null && motherUri.hasScheme && motherUri.hasAuthority) {
-          headers['Origin'] = '${motherUri.scheme}://${motherUri.authority}';
-        }
-      }
-
-      int lastReceived = 0;
-      DateTime lastTime = DateTime.now();
-
-      await _dio.download(
-        videoUrl,
-        savePath,
-        cancelToken: cancelToken,
-        options: Options(
+      if (videoUrl.contains('.m3u8')) {
+        await _downloadHlsVideo(
+          item: item,
+          videoUrl: videoUrl,
           headers: headers,
-          validateStatus: (status) => status != null && status >= 200 && status < 400,
-        ),
-        onReceiveProgress: (received, total) {
-          final now = DateTime.now();
-          final elapsedMs = now.difference(lastTime).inMilliseconds;
+          savePath: savePath,
+          cancelToken: cancelToken,
+        );
+      } else {
+        int lastReceived = 0;
+        DateTime lastTime = DateTime.now();
 
-          item.downloadedBytes = received;
-          if (total > 0) {
-            item.totalBytes = total;
-            item.fileSizeBytes = total;
-            item.progress = (received / total).clamp(0.0, 1.0);
-          } else {
-            item.progress = -1.0;
-          }
+        await _dio.download(
+          videoUrl,
+          savePath,
+          cancelToken: cancelToken,
+          options: Options(
+            headers: headers,
+            validateStatus: (status) => status != null && status >= 200 && status < 400,
+          ),
+          onReceiveProgress: (received, total) {
+            final now = DateTime.now();
+            final elapsedMs = now.difference(lastTime).inMilliseconds;
 
-          if (elapsedMs >= 350 || (total > 0 && received >= total)) {
-            final bytesDiff = received - lastReceived;
-            if (bytesDiff > 0 && elapsedMs > 0) {
-              final speed = (bytesDiff / (elapsedMs / 1000.0));
-              item.downloadSpeedBytesPerSec = speed;
-              if (total > 0 && speed > 0) {
-                final remainingBytes = total - received;
-                final sec = (remainingBytes / speed).ceil();
-                item.estimatedRemainingTime = Duration(seconds: sec > 0 ? sec : 0);
-              }
+            item.downloadedBytes = received;
+            if (total > 0) {
+              item.totalBytes = total;
+              item.fileSizeBytes = total;
+              item.progress = (received / total).clamp(0.0, 1.0);
+            } else {
+              item.progress = -1.0;
             }
-            lastReceived = received;
-            lastTime = now;
-            notifyListeners();
-          }
-        },
-      );
+
+            if (elapsedMs >= 350 || (total > 0 && received >= total)) {
+              final bytesDiff = received - lastReceived;
+              if (bytesDiff > 0 && elapsedMs > 0) {
+                final speed = (bytesDiff / (elapsedMs / 1000.0));
+                item.downloadSpeedBytesPerSec = speed;
+                if (total > 0 && speed > 0) {
+                  final remainingBytes = total - received;
+                  final sec = (remainingBytes / speed).ceil();
+                  item.estimatedRemainingTime = Duration(seconds: sec > 0 ? sec : 0);
+                }
+              }
+              lastReceived = received;
+              lastTime = now;
+              notifyListeners();
+            }
+          },
+        );
+      }
 
       final downloadedFile = File(savePath);
       if (await downloadedFile.exists()) {
@@ -395,6 +468,155 @@ class BufferService extends ChangeNotifier {
       _cancelTokens.remove(item.id);
       await _saveToStorage();
       notifyListeners();
+    }
+  }
+
+  /// Lädt HLS-Video-Streams (.m3u8) herunter, indem alle Segmente sequentiell
+  /// in eine zusammenhängende Video-Datei zusammengefügt werden.
+  Future<void> _downloadHlsVideo({
+    required VideoItem item,
+    required String videoUrl,
+    required Map<String, String> headers,
+    required String savePath,
+    required CancelToken cancelToken,
+  }) async {
+    final res = await _dio.get<String>(
+      videoUrl,
+      options: Options(
+        headers: headers,
+        responseType: ResponseType.plain,
+        validateStatus: (s) => s != null && s >= 200 && s < 400,
+      ),
+      cancelToken: cancelToken,
+    );
+
+    String playlistContent = res.data ?? '';
+    String mediaPlaylistUrl = videoUrl;
+
+    if (playlistContent.contains('#EXT-X-STREAM-INF')) {
+      final lines = playlistContent.split('\n');
+      String? bestVariantUrl;
+      int maxBandwidth = 0;
+      int currentBandwidth = 0;
+
+      for (int i = 0; i < lines.length; i++) {
+        final line = lines[i].trim();
+        if (line.startsWith('#EXT-X-STREAM-INF')) {
+          final bwMatch = RegExp(r'BANDWIDTH=(\d+)').firstMatch(line);
+          if (bwMatch != null) {
+            currentBandwidth = int.tryParse(bwMatch.group(1) ?? '0') ?? 0;
+          }
+        } else if (line.isNotEmpty && !line.startsWith('#')) {
+          if (bestVariantUrl == null || currentBandwidth >= maxBandwidth) {
+            bestVariantUrl = line;
+            maxBandwidth = currentBandwidth;
+          }
+          currentBandwidth = 0;
+        }
+      }
+
+      if (bestVariantUrl != null) {
+        mediaPlaylistUrl = Uri.parse(videoUrl).resolve(bestVariantUrl).toString();
+        final mediaRes = await _dio.get<String>(
+          mediaPlaylistUrl,
+          options: Options(
+            headers: headers,
+            responseType: ResponseType.plain,
+            validateStatus: (s) => s != null && s >= 200 && s < 400,
+          ),
+          cancelToken: cancelToken,
+        );
+        playlistContent = mediaRes.data ?? '';
+      }
+    }
+
+    final lines = playlistContent.split('\n');
+    final segmentUrls = <String>[];
+
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i].trim();
+      if (line.isNotEmpty && !line.startsWith('#')) {
+        final segFullUrl = Uri.parse(mediaPlaylistUrl).resolve(line).toString();
+        segmentUrls.add(segFullUrl);
+      }
+    }
+
+    if (segmentUrls.isEmpty) {
+      throw Exception('Keine Video-Segmente in der HLS-Playlist gefunden.');
+    }
+
+    final outputFile = File(savePath);
+    if (await outputFile.exists()) {
+      await outputFile.delete();
+    }
+    final raf = await outputFile.open(mode: FileMode.writeOnlyAppend);
+
+    int downloadedSegments = 0;
+    int totalBytesAccumulated = 0;
+    DateTime lastTelemetryTime = DateTime.now();
+    int lastTelemetryBytes = 0;
+
+    try {
+      for (final segUrl in segmentUrls) {
+        if (cancelToken.isCancelled) {
+          throw Exception('Download abgebrochen');
+        }
+
+        List<int>? bytes;
+        for (int attempt = 0; attempt < 2; attempt++) {
+          try {
+            final segRes = await _dio.get<List<int>>(
+              segUrl,
+              options: Options(
+                headers: headers,
+                responseType: ResponseType.bytes,
+                validateStatus: (s) => s != null && s >= 200 && s < 400,
+                receiveTimeout: const Duration(seconds: 25),
+              ),
+              cancelToken: cancelToken,
+            );
+            bytes = segRes.data;
+            if (bytes != null && bytes.isNotEmpty) break;
+          } catch (e) {
+            if (cancelToken.isCancelled) rethrow;
+            if (attempt == 0) await Future.delayed(const Duration(milliseconds: 500));
+          }
+        }
+
+        if (bytes != null && bytes.isNotEmpty) {
+          await raf.writeFrom(bytes);
+          totalBytesAccumulated += bytes.length;
+        }
+
+        downloadedSegments++;
+        item.downloadedBytes = totalBytesAccumulated;
+        item.progress = (downloadedSegments / segmentUrls.length).clamp(0.0, 1.0);
+
+        final estimatedTotal = (totalBytesAccumulated / downloadedSegments * segmentUrls.length).round();
+        item.totalBytes = estimatedTotal;
+        item.fileSizeBytes = estimatedTotal;
+
+        final now = DateTime.now();
+        final elapsedMs = now.difference(lastTelemetryTime).inMilliseconds;
+        if (elapsedMs >= 400 || downloadedSegments == segmentUrls.length) {
+          final diffBytes = totalBytesAccumulated - lastTelemetryBytes;
+          if (diffBytes > 0 && elapsedMs > 0) {
+            final speed = diffBytes / (elapsedMs / 1000.0);
+            item.downloadSpeedBytesPerSec = speed;
+            final remainingSegments = segmentUrls.length - downloadedSegments;
+            final avgSegBytes = totalBytesAccumulated / downloadedSegments;
+            final remainingBytes = remainingSegments * avgSegBytes;
+            if (speed > 0) {
+              item.estimatedRemainingTime = Duration(seconds: (remainingBytes / speed).ceil());
+            }
+          }
+          lastTelemetryTime = now;
+          lastTelemetryBytes = totalBytesAccumulated;
+          notifyListeners();
+        }
+      }
+    } finally {
+      await raf.close();
     }
   }
 
