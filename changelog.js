@@ -1,3 +1,9 @@
+// Version v0.1.007
+// - In-App Browser Ladehemmung behoben: domStorageEnabled & databaseEnabled für localStorage/IndexedDB aktiviert
+// - Mobile Chrome 128 User-Agent gesetzt gegen WebView-/Bot-Blockaden
+// - Vor- und Zurück-Navigationsbuttons in der Browser-Toolbar integriert
+// - Android System-Zurück-Taste abgefangen (PopScope): navigiert im Web-Verlauf, wechselt Tabs und schützt vor App-Absturz/Beenden
+
 // Version v0.1.006
 // - Fertig kompilierte Release-APK (Puff-er.apk, 23,5 MB) heruntergeladen und in G:\Meine Ablage\apk\Puff-er\Puff-er.apk abgelegt
 
