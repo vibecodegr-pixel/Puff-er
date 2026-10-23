@@ -1,3 +1,6 @@
+// Version v0.1.006
+// - Fertig kompilierte Release-APK (Puff-er.apk, 23,5 MB) heruntergeladen und in G:\Meine Ablage\apk\Puff-er\Puff-er.apk abgelegt
+
 // Version v0.1.005
 // - GitHub Release-Veröffentlichung im CI-Workflow integriert für direkte APK-Bereitstellung
 // - APK-Artefakt umbenannt in Puff-er.apk
