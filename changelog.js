@@ -1,3 +1,9 @@
+// Version v0.1.008
+// - Video-Download mit Referer und Origin der Mutter-Seite ausgestattet (verhindert 403-Fehler und HTML-Blockaden)
+// - Dateivalidierung im BufferService: erkennt und verwirft fehlerhafte HTML-Seiten vor dem Puffern
+// - Video-Player mit Netzwerk-Fallback und verständlicher Fehlerdiagnose ausgestattet ('Source error' behoben)
+// - Media-Stream-Netzwerkinterception (shouldInterceptRequest) und relative URL-Auflösung in JS aktiviert
+
 // Version v0.1.007
 // - In-App Browser Ladehemmung behoben: domStorageEnabled & databaseEnabled für localStorage/IndexedDB aktiviert
 // - Mobile Chrome 128 User-Agent gesetzt gegen WebView-/Bot-Blockaden

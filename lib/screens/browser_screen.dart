@@ -88,19 +88,41 @@ class BrowserScreenState extends State<BrowserScreen> {
   /// Robustes JavaScript zur Video-Erkennung & Checkbox-Overlay
   static const String _videoDetectionScript = """
     (function() {
+      function resolveUrl(url) {
+        if (!url) return '';
+        try {
+          return new URL(url, window.location.href).href;
+        } catch(e) {
+          return url;
+        }
+      }
+
       function initPuffer() {
         if (window.__pufferInjected) return;
         window.__pufferInjected = true;
 
         function reportVideo(videoSrc, title) {
-          if (!videoSrc || videoSrc.startsWith('blob:') || videoSrc.startsWith('javascript:')) return;
+          var cleanUrl = resolveUrl(videoSrc);
+          if (!cleanUrl || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('javascript:')) return;
           try {
             if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
               window.flutter_inappwebview.callHandler('pufferVideoDetected', {
-                videoUrl: videoSrc,
+                videoUrl: cleanUrl,
                 pageUrl: window.location.href,
                 pageTitle: document.title || title || 'Web-Video'
               });
+            }
+          } catch(e) {}
+        }
+
+        function scanPerformanceMedia() {
+          try {
+            var entries = window.performance.getEntriesByType('resource');
+            for (var i = 0; i < entries.length; i++) {
+              var name = entries[i].name;
+              if (name && name.match(/\\.(mp4|webm|m4v)(\\?.*)?\$/i)) {
+                reportVideo(name, document.title);
+              }
             }
           } catch(e) {}
         }
@@ -122,6 +144,7 @@ class BrowserScreenState extends State<BrowserScreen> {
           video.addEventListener('play', function() {
             var playSrc = video.currentSrc || video.src;
             if (playSrc) reportVideo(playSrc, document.title);
+            scanPerformanceMedia();
           });
 
           // Overlay-Container
@@ -143,6 +166,7 @@ class BrowserScreenState extends State<BrowserScreen> {
               var s = video.querySelector('source');
               if (s) targetSrc = s.src;
             }
+            targetSrc = resolveUrl(targetSrc);
             if (targetSrc && window.flutter_inappwebview) {
               checkbox.disabled = true;
               label.innerText = 'Wird gepuffert...';
@@ -182,6 +206,7 @@ class BrowserScreenState extends State<BrowserScreen> {
           for (var i = 0; i < videos.length; i++) {
             attachCheckboxToVideo(videos[i]);
           }
+          scanPerformanceMedia();
         }
 
         scanAllVideos();
@@ -443,6 +468,20 @@ class BrowserScreenState extends State<BrowserScreen> {
                   },
                   onReceivedServerTrustAuthRequest: (controller, challenge) async {
                     return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.PROCEED);
+                  },
+                  shouldInterceptRequest: (controller, request) async {
+                    final url = request.url.toString();
+                    final lower = url.toLowerCase();
+                    if ((lower.contains('.mp4') || lower.contains('.webm') || lower.contains('.m4v')) &&
+                        !lower.startsWith('blob:') &&
+                        !lower.startsWith('data:')) {
+                      _onVideoDetected({
+                        'videoUrl': url,
+                        'pageUrl': _currentUrl,
+                        'pageTitle': _currentTitle,
+                      });
+                    }
+                    return null;
                   },
                   onLoadStart: (controller, url) {
                     setState(() {

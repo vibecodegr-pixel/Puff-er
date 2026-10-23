@@ -14,10 +14,10 @@ class BufferService extends ChangeNotifier {
   final List<VideoItem> _items = [];
   final Map<String, CancelToken> _cancelTokens = {};
   final Dio _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(seconds: 60),
+    connectTimeout: const Duration(seconds: 20),
+    receiveTimeout: const Duration(seconds: 120),
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
     },
   ));
 
@@ -70,7 +70,7 @@ class BufferService extends ChangeNotifier {
     await _loadFromStorage();
     await cleanupExpiredFiles();
     
-    // Regelmäßiger ressourcenschonender Prüf-Timer (alle 2 Minuten)
+    // Regelmäßiger Prüf-Timer (alle 2 Minuten)
     _cleanupTimer = Timer.periodic(const Duration(minutes: 2), (_) {
       cleanupExpiredFiles();
     });
@@ -87,7 +87,6 @@ class BufferService extends ChangeNotifier {
       if (item.status == VideoStatus.buffered) {
         final isExpired = item.expiresAt != null && now.isAfter(item.expiresAt!);
         if (isExpired) {
-          // Temporäre Datei physikalisch von der Festplatte löschen
           if (item.localFilePath != null) {
             try {
               final file = File(item.localFilePath!);
@@ -127,15 +126,12 @@ class BufferService extends ChangeNotifier {
     required String motherPageHost,
     required String title,
   }) async {
-    // Prüfen, ob bereits vorhanden
     VideoItem? existing = findItemByUrl(videoUrl);
     if (existing != null) {
       if (existing.isOfflineAvailable) {
-        // Bereits gepuffert
         return;
       }
       if (existing.status == VideoStatus.downloading) {
-        // Lädt bereits
         return;
       }
     }
@@ -169,7 +165,6 @@ class BufferService extends ChangeNotifier {
         await videosDir.create(recursive: true);
       }
 
-      // Dateiendung ermitteln (Standard: .mp4)
       String extension = '.mp4';
       final uri = Uri.tryParse(videoUrl);
       if (uri != null && uri.path.isNotEmpty) {
@@ -185,11 +180,28 @@ class BufferService extends ChangeNotifier {
 
       final savePath = '${videosDir.path}/puffer_${item.id}$extension';
 
-      // Ressourcensparender Chunk-Download
+      // Wichtig: Referer und Origin mitsenden, damit Web-Server das Video nicht mit 403 / HTML blockieren!
+      final headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity',
+      };
+      if (motherPageUrl.isNotEmpty && motherPageUrl.startsWith('http')) {
+        headers['Referer'] = motherPageUrl;
+        final motherUri = Uri.tryParse(motherPageUrl);
+        if (motherUri != null && motherUri.hasScheme && motherUri.hasAuthority) {
+          headers['Origin'] = '${motherUri.scheme}://${motherUri.authority}';
+        }
+      }
+
       await _dio.download(
         videoUrl,
         savePath,
         cancelToken: cancelToken,
+        options: Options(
+          headers: headers,
+          validateStatus: (status) => status != null && status >= 200 && status < 400,
+        ),
         onReceiveProgress: (received, total) {
           if (total > 0) {
             item.progress = received / total;
@@ -202,6 +214,24 @@ class BufferService extends ChangeNotifier {
       final downloadedFile = File(savePath);
       if (await downloadedFile.exists()) {
         final fileSize = await downloadedFile.length();
+
+        // Validierung: Prüfe ob die Datei ein echtes Video ist oder eine HTML-Fehlerseite (403/DRM block)
+        bool isHtmlError = false;
+        if (fileSize < 100 * 1024) {
+          try {
+            final firstBytes = await downloadedFile.openRead(0, 512).first;
+            final text = String.fromCharCodes(firstBytes).toLowerCase();
+            if (text.contains('<!doctype') || text.contains('<html') || text.contains('403 forbidden') || text.contains('access denied')) {
+              isHtmlError = true;
+            }
+          } catch (_) {}
+        }
+
+        if (fileSize < 20 * 1024 || isHtmlError) {
+          await downloadedFile.delete();
+          throw Exception('Webseite verweigert den direkten Video-Download oder hat eine HTML-Fehlerseite geschickt.');
+        }
+
         item.localFilePath = savePath;
         item.fileSizeBytes = fileSize;
         item.bufferedAt = DateTime.now();
@@ -216,7 +246,7 @@ class BufferService extends ChangeNotifier {
         item.status = VideoStatus.idle;
       } else {
         item.status = VideoStatus.error;
-        item.errorMessage = e.toString();
+        item.errorMessage = e.toString().replaceFirst('Exception: ', '');
         debugPrint('Download-Fehler für ${item.videoUrl}: $e');
       }
     } finally {
@@ -276,7 +306,7 @@ class BufferService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Löscht alle aktuell gepufferten Dateien (z. B. "Puffer leeren").
+  /// Löscht alle aktuell gepufferten Dateien.
   Future<void> clearAllBuffered() async {
     for (final item in _items) {
       if (item.localFilePath != null) {

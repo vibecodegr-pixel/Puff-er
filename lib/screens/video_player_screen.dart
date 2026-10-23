@@ -29,38 +29,71 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   Future<void> _initPlayer() async {
     final path = widget.item.localFilePath;
-    if (path == null) {
-      setState(() {
-        _hasError = true;
-        _errorMessage = 'Lokaler Dateipfad ist nicht vorhanden.';
-      });
-      return;
+    File? file;
+    if (path != null) {
+      file = File(path);
     }
 
-    final file = File(path);
-    if (!await file.exists()) {
-      setState(() {
-        _hasError = true;
-        _errorMessage = 'Die Offline-Datei wurde bereits aus dem 5h-Puffer gelöscht.';
-      });
-      return;
+    // 1. Primär: Versuche lokale gepufferte Datei abzuspielen
+    if (file != null && await file.exists()) {
+      try {
+        _controller = VideoPlayerController.file(file);
+        await _controller!.initialize();
+        _controller!.addListener(_playerListener);
+        setState(() {
+          _isInitialized = true;
+          _hasError = false;
+        });
+        _controller!.play();
+        _startHideTimer();
+        return;
+      } catch (e) {
+        debugPrint('Lokale Videowiedergabe fehlgeschlagen: $e');
+      }
     }
 
-    try {
-      _controller = VideoPlayerController.file(file);
-      await _controller!.initialize();
-      _controller!.addListener(_playerListener);
-      setState(() {
-        _isInitialized = true;
-      });
-      _controller!.play();
-      _startHideTimer();
-    } catch (e) {
-      setState(() {
-        _hasError = true;
-        _errorMessage = 'Fehler beim Abspielen: $e';
-      });
+    // 2. Sekundär: Fallback auf Direkt-Stream über Video-URL
+    if (widget.item.videoUrl.isNotEmpty && widget.item.videoUrl.startsWith('http')) {
+      try {
+        _controller?.dispose();
+        _controller = VideoPlayerController.networkUrl(
+          Uri.parse(widget.item.videoUrl),
+          httpHeaders: {
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+            'Referer': widget.item.motherPageUrl,
+          },
+        );
+        await _controller!.initialize();
+        _controller!.addListener(_playerListener);
+        setState(() {
+          _isInitialized = true;
+          _hasError = false;
+        });
+        _controller!.play();
+        _startHideTimer();
+        return;
+      } catch (e) {
+        debugPrint('Netzwerk-Fallback fehlgeschlagen: $e');
+      }
     }
+
+    // 3. Verständliche Fehlererklärung für den Nutzer
+    String friendlyMessage = 'Das Video konnte nicht abgespielt werden.';
+    if (file != null && await file.exists()) {
+      final size = await file.length();
+      if (size < 50 * 1024) {
+        friendlyMessage = 'Die Datei ist unvollständig oder die Webseite schützt ihre Videos mit einem DRM-Kopierschutz.';
+      } else {
+        friendlyMessage = 'Der Videocodec dieses Streams wird vom Android-Player nicht nativ dekodiert.';
+      }
+    } else {
+      friendlyMessage = 'Die temporäre Videodatei ist nicht vorhanden oder bereits nach 5h abgelaufen.';
+    }
+
+    setState(() {
+      _hasError = true;
+      _errorMessage = friendlyMessage;
+    });
   }
 
   void _playerListener() {
@@ -99,7 +132,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   void dispose() {
     _hideControlsTimer?.cancel();
     _controller?.removeListener(_playerListener);
-    _controller?.dispose(); // Hardware-Decoder und Speicher sofort freigeben (ressourcenschonend)
+    _controller?.dispose();
     super.dispose();
   }
 
@@ -111,22 +144,40 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         child: _hasError
             ? Center(
                 child: Padding(
-                  padding: const EdgeInsets.all(24),
+                  padding: const EdgeInsets.all(28),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
-                      const SizedBox(height: 16),
+                      Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent.withOpacity(0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.error_outline, size: 52, color: Colors.redAccent),
+                      ),
+                      const SizedBox(height: 20),
+                      const Text(
+                        'Wiedergabe nicht möglich',
+                        style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 8),
                       Text(
                         _errorMessage,
                         textAlign: TextAlign.center,
-                        style: const TextStyle(color: Colors.white70, fontSize: 14),
+                        style: const TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
                       ),
-                      const SizedBox(height: 20),
-                      ElevatedButton(
-                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2C2C2C)),
+                      const SizedBox(height: 24),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: const Color(0xFF2C2C2C),
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                        ),
                         onPressed: () => Navigator.pop(context),
-                        child: const Text('Zurück', style: TextStyle(color: Colors.white)),
+                        icon: const Icon(Icons.arrow_back, size: 18),
+                        label: const Text('Zurück zum Puffer'),
                       ),
                     ],
                   ),
@@ -149,14 +200,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                           ),
                         ),
 
-                        // Steuerleisten Overlay
                         if (_showControls)
                           Container(
                             color: Colors.black45,
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.spaceBetween,
                               children: [
-                                // Oberer Header mit Zurück-Button & Titel
                                 Padding(
                                   padding: const EdgeInsets.all(12),
                                   child: Row(
@@ -181,7 +230,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                               ),
                                             ),
                                             Text(
-                                              'Offline aus Mutter-Seite: ${widget.item.motherPageHost}',
+                                              'Mutter-Seite: ${widget.item.motherPageHost}',
                                               style: const TextStyle(color: Colors.white60, fontSize: 12),
                                             ),
                                           ],
@@ -191,7 +240,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                   ),
                                 ),
 
-                                // Zentraler Play / Pause Button
                                 IconButton(
                                   iconSize: 64,
                                   icon: Icon(
@@ -210,7 +258,6 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                   },
                                 ),
 
-                                // Untere Kontrollleiste mit Fortschrittsanzeige & Zeit
                                 Padding(
                                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                                   child: Column(
