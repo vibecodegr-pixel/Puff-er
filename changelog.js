@@ -1,3 +1,7 @@
+// Version v0.1.005
+// - GitHub Release-Veröffentlichung im CI-Workflow integriert für direkte APK-Bereitstellung
+// - APK-Artefakt umbenannt in Puff-er.apk
+
 // Version v0.1.004
 // - Fehlendes App-Icon (ic_launcher.xml) in res/drawable hinzugefügt (AAPT2 Resource Linking behoben)
 // - AndroidManifest auf @drawable/ic_launcher umgestellt
