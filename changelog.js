@@ -1,3 +1,9 @@
+// Version v0.1.009
+// - Integrierter Video-AdBlocker: blockiert Pre-Roll Werbenetzwerke (Google IMA, DoubleClick, VMAP) direkt in shouldInterceptRequest
+// - Automatische Teaser- und Vorschau-Erkennung: unterscheidet Hauptvideos von kurzen Hover-/Vorschau-Loops
+// - '⚡ In Puffer'-Schnellbutton direkt auf Video-Karten und Thumbnails im Feed implementiert (ohne Video öffnen zu müssen)
+// - Werbefilter-Schutz im BufferService: weist Werbe-URLs strikt ab
+
 // Version v0.1.008
 // - Video-Download mit Referer und Origin der Mutter-Seite ausgestattet (verhindert 403-Fehler und HTML-Blockaden)
 // - Dateivalidierung im BufferService: erkennt und verwirft fehlerhafte HTML-Seiten vor dem Puffern

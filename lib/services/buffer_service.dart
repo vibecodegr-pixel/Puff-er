@@ -119,6 +119,18 @@ class BufferService extends ChangeNotifier {
     }
   }
 
+  bool _isAdUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('doubleclick.net') ||
+        lower.contains('googlesyndication.com') ||
+        lower.contains('googleads') ||
+        lower.contains('imasdk.googleapis.com') ||
+        lower.contains('adservice.google') ||
+        lower.contains('/pagead/') ||
+        lower.contains('/video_ads/') ||
+        lower.contains('vmap');
+  }
+
   /// Startet den Download eines Videos in den 5-Stunden-Pufferspeicher.
   Future<void> bufferVideo({
     required String videoUrl,
@@ -126,6 +138,10 @@ class BufferService extends ChangeNotifier {
     required String motherPageHost,
     required String title,
   }) async {
+    if (_isAdUrl(videoUrl)) {
+      debugPrint('Werbe-URL wird abgewiesen: $videoUrl');
+      return;
+    }
     VideoItem? existing = findItemByUrl(videoUrl);
     if (existing != null) {
       if (existing.isOfflineAvailable) {

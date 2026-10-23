@@ -1,5 +1,6 @@
 import 'dart:collection';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import '../models/video_item.dart';
 import '../services/buffer_service.dart';
@@ -46,7 +47,28 @@ class BrowserScreenState extends State<BrowserScreen> {
     }
   }
 
-  /// Ermöglicht der Navigation, den Android-Hardware-Zurück-Button abzufangen
+  /// Prüft, ob eine URL zu einem bekannten Werbe- oder Tracking-Netzwerk gehört
+  static bool isAdUrl(String url) {
+    final lower = url.toLowerCase();
+    return lower.contains('doubleclick.net') ||
+        lower.contains('googlesyndication.com') ||
+        lower.contains('googleads') ||
+        lower.contains('imasdk.googleapis.com') ||
+        lower.contains('adservice.google') ||
+        lower.contains('amazon-adsystem') ||
+        lower.contains('adnxs.com') ||
+        lower.contains('pubmatic.com') ||
+        lower.contains('rubiconproject.com') ||
+        lower.contains('scorecardresearch.com') ||
+        lower.contains('taboola.com') ||
+        lower.contains('outbrain.com') ||
+        lower.contains('/pagead/') ||
+        lower.contains('/video_ads/') ||
+        lower.contains('vmap') ||
+        lower.contains('ad_type=') ||
+        lower.contains('ad_tag=');
+  }
+
   Future<bool> handleBackPress() async {
     if (_webViewController != null && await _webViewController!.canGoBack()) {
       await _webViewController!.goBack();
@@ -85,7 +107,7 @@ class BrowserScreenState extends State<BrowserScreen> {
     );
   }
 
-  /// Robustes JavaScript zur Video-Erkennung & Checkbox-Overlay
+  /// Injektionsskript mit Anti-Werbung, Teaser-Erkennung & Feed-Direkt-Puffer-Buttons
   static const String _videoDetectionScript = """
     (function() {
       function resolveUrl(url) {
@@ -97,19 +119,35 @@ class BrowserScreenState extends State<BrowserScreen> {
         }
       }
 
+      function isAdSource(url) {
+        if (!url) return false;
+        var lower = url.toLowerCase();
+        return lower.indexOf('doubleclick') !== -1 ||
+               lower.indexOf('googleads') !== -1 ||
+               lower.indexOf('googlesyndication') !== -1 ||
+               lower.indexOf('imasdk') !== -1 ||
+               lower.indexOf('/pagead/') !== -1 ||
+               lower.indexOf('vmap') !== -1 ||
+               lower.indexOf('/video_ads/') !== -1;
+      }
+
       function initPuffer() {
         if (window.__pufferInjected) return;
         window.__pufferInjected = true;
 
-        function reportVideo(videoSrc, title) {
+        function reportVideo(videoSrc, title, isPreview, duration) {
           var cleanUrl = resolveUrl(videoSrc);
           if (!cleanUrl || cleanUrl.startsWith('blob:') || cleanUrl.startsWith('javascript:')) return;
+          if (isAdSource(cleanUrl)) return; // Werbevideos ignorieren!
+
           try {
             if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
               window.flutter_inappwebview.callHandler('pufferVideoDetected', {
                 videoUrl: cleanUrl,
                 pageUrl: window.location.href,
-                pageTitle: document.title || title || 'Web-Video'
+                pageTitle: document.title || title || 'Web-Video',
+                isPreview: !!isPreview,
+                duration: duration || 0
               });
             }
           } catch(e) {}
@@ -121,12 +159,59 @@ class BrowserScreenState extends State<BrowserScreen> {
             for (var i = 0; i < entries.length; i++) {
               var name = entries[i].name;
               if (name && name.match(/\\.(mp4|webm|m4v)(\\?.*)?\$/i)) {
-                reportVideo(name, document.title);
+                if (!isAdSource(name)) {
+                  var isPrev = name.toLowerCase().indexOf('preview') !== -1 || name.toLowerCase().indexOf('teaser') !== -1;
+                  reportVideo(name, document.title, isPrev, 0);
+                }
               }
             }
           } catch(e) {}
         }
 
+        // 1. Direkt-Puffer-Buttons auf Video-Karten / Thumbnails im Feed einbinden
+        function attachFeedQuickBufferButtons() {
+          var links = document.querySelectorAll('a[href*="/watch"], a[href*="/video/"], a[href*="/v/"], a[href*="watch?v="]');
+          for (var i = 0; i < links.length; i++) {
+            var a = links[i];
+            if (a.dataset.pufferCardAttached === 'true') continue;
+
+            // Prüfen, ob der Link ein Vorschaubild oder ein Video enthält
+            var hasMedia = a.querySelector('img, video, canvas');
+            if (!hasMedia && a.offsetHeight < 45) continue;
+            a.dataset.pufferCardAttached = 'true';
+
+            var targetUrl = resolveUrl(a.href);
+            if (!targetUrl || targetUrl.startsWith('javascript:')) continue;
+
+            var cardBtn = document.createElement('div');
+            cardBtn.className = 'puffer-card-quick-btn';
+            cardBtn.style.cssText = 'position: absolute; bottom: 8px; right: 8px; z-index: 99999; background: rgba(0, 230, 118, 0.95); color: #000; padding: 5px 10px; border-radius: 14px; font-size: 11px; font-weight: 800; cursor: pointer; box-shadow: 0 3px 10px rgba(0,0,0,0.6); pointer-events: auto; display: flex; align-items: center; gap: 4px;';
+            cardBtn.innerHTML = '<span>⚡ In Puffer</span>';
+
+            (function(url, title, btn) {
+              btn.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                btn.style.background = '#666';
+                btn.innerHTML = '<span>Lade...</span>';
+                if (window.flutter_inappwebview) {
+                  window.flutter_inappwebview.callHandler('pufferOpenAndBufferTarget', {
+                    targetUrl: url,
+                    pageTitle: title
+                  });
+                }
+              });
+            })(targetUrl, a.innerText || a.getAttribute('title') || 'Video', cardBtn);
+
+            var comp = window.getComputedStyle(a).position;
+            if (comp === 'static') {
+              a.style.position = 'relative';
+            }
+            a.appendChild(cardBtn);
+          }
+        }
+
+        // 2. Videos auf der Seite scannen & Checkbox montieren
         function attachCheckboxToVideo(video) {
           if (!video || video.dataset.pufferAttached === 'true') return;
           video.dataset.pufferAttached = 'true';
@@ -137,17 +222,26 @@ class BrowserScreenState extends State<BrowserScreen> {
             if (source) src = source.src;
           }
 
-          if (src) {
-            reportVideo(src, document.title);
+          var isLoop = video.loop;
+          var isMuted = video.muted;
+          var dur = video.duration || 0;
+          var isPreview = (isLoop && isMuted && dur > 0 && dur <= 25) || (src && (src.indexOf('preview') !== -1 || src.indexOf('teaser') !== -1));
+
+          if (src && !isAdSource(src)) {
+            reportVideo(src, document.title, isPreview, dur);
           }
 
           video.addEventListener('play', function() {
             var playSrc = video.currentSrc || video.src;
-            if (playSrc) reportVideo(playSrc, document.title);
+            if (playSrc && !isAdSource(playSrc)) {
+              var pDur = video.duration || 0;
+              var pPrev = (video.loop && video.muted && pDur > 0 && pDur <= 25);
+              reportVideo(playSrc, document.title, pPrev, pDur);
+            }
             scanPerformanceMedia();
           });
 
-          // Overlay-Container
+          // Overlay-Checkbox über dem Video
           var wrapper = document.createElement('div');
           wrapper.className = 'puffer-overlay-checkbox-container';
           wrapper.style.cssText = 'position: absolute; top: 12px; right: 12px; z-index: 2147483647; background: rgba(18, 18, 18, 0.88); backdrop-filter: blur(8px); border: 1.5px solid #00E676; border-radius: 20px; padding: 6px 12px; display: flex; align-items: center; gap: 8px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px; font-weight: 700; color: #ffffff; box-shadow: 0 4px 14px rgba(0,0,0,0.6); user-select: none; pointer-events: auto;';
@@ -157,7 +251,7 @@ class BrowserScreenState extends State<BrowserScreen> {
           checkbox.style.cssText = 'width: 18px; height: 18px; accent-color: #00E676; cursor: pointer; margin: 0;';
           
           var label = document.createElement('span');
-          label.innerText = 'Offline-Puffer (5h)';
+          label.innerText = isPreview ? 'Vorschau-Puffer' : 'Offline-Puffer (5h)';
           label.style.cssText = 'cursor: pointer;';
 
           function triggerBuffer() {
@@ -201,18 +295,19 @@ class BrowserScreenState extends State<BrowserScreen> {
           }
         }
 
-        function scanAllVideos() {
+        function scanAll() {
           var videos = document.querySelectorAll('video');
           for (var i = 0; i < videos.length; i++) {
             attachCheckboxToVideo(videos[i]);
           }
+          attachFeedQuickBufferButtons();
           scanPerformanceMedia();
         }
 
-        scanAllVideos();
+        scanAll();
 
         var observer = new MutationObserver(function() {
-          scanAllVideos();
+          scanAll();
         });
         if (document.body) {
           observer.observe(document.body, { childList: true, subtree: true });
@@ -230,9 +325,12 @@ class BrowserScreenState extends State<BrowserScreen> {
   void _onVideoDetected(Map<String, dynamic> data) {
     final videoUrl = data['videoUrl'] as String?;
     if (videoUrl == null || videoUrl.isEmpty) return;
+    if (isAdUrl(videoUrl)) return; // Werbe-Videos strikt verwerfen!
 
     final pageUrl = data['pageUrl'] as String? ?? _currentUrl;
     final pageTitle = data['pageTitle'] as String? ?? _currentTitle;
+    final isPreview = data['isPreview'] as bool? ?? false;
+    final duration = (data['duration'] is num) ? (data['duration'] as num).toDouble() : null;
 
     if (!_detectedVideos.containsKey(videoUrl)) {
       setState(() {
@@ -241,6 +339,8 @@ class BrowserScreenState extends State<BrowserScreen> {
           pageUrl: pageUrl,
           pageTitle: pageTitle,
           detectedAt: DateTime.now(),
+          isPreview: isPreview,
+          duration: duration,
         );
       });
     }
@@ -279,7 +379,15 @@ class BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final detectedCount = _detectedVideos.length;
+    // Sortiere Hauptvideos vor Vorschau-Videos
+    final sortedVideos = _detectedVideos.values.toList()
+      ..sort((a, b) {
+        if (!a.isPreview && b.isPreview) return -1;
+        if (a.isPreview && !b.isPreview) return 1;
+        return 0;
+      });
+
+    final detectedCount = sortedVideos.length;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -291,7 +399,6 @@ class BrowserScreenState extends State<BrowserScreen> {
           titleSpacing: 4,
           title: Row(
             children: [
-              // Browser-Verlauf: Zurück
               IconButton(
                 icon: Icon(
                   Icons.arrow_back_ios_new,
@@ -307,7 +414,6 @@ class BrowserScreenState extends State<BrowserScreen> {
                       }
                     : null,
               ),
-              // Browser-Verlauf: Vorwärts
               IconButton(
                 icon: Icon(
                   Icons.arrow_forward_ios,
@@ -324,7 +430,6 @@ class BrowserScreenState extends State<BrowserScreen> {
                     : null,
               ),
               const SizedBox(width: 2),
-              // Adress- und Suchleiste
               Expanded(
                 child: Container(
                   height: 40,
@@ -403,9 +508,8 @@ class BrowserScreenState extends State<BrowserScreen> {
                 child: InAppWebView(
                   initialUrlRequest: URLRequest(url: WebUri(_currentUrl)),
                   initialSettings: InAppWebViewSettings(
-                    // Kern-Einstellungen für reibungsloses Laden aller Seiten:
-                    domStorageEnabled: true, // Behebt das Hängenbleiben bei 5% (ermöglicht localStorage/sessionStorage)
-                    databaseEnabled: true,   // Erlaubt IndexedDB
+                    domStorageEnabled: true,
+                    databaseEnabled: true,
                     javaScriptEnabled: true,
                     javaScriptCanOpenWindowsAutomatically: true,
                     thirdPartyCookiesEnabled: true,
@@ -421,7 +525,6 @@ class BrowserScreenState extends State<BrowserScreen> {
                     supportZoom: true,
                     builtInZoomControls: true,
                     displayZoomControls: false,
-                    // Modernes Standard-Chrome-User-Agent verhindert Bot-/WebView-Blocks
                     userAgent: 'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
                   ),
                   initialUserScripts: UnmodifiableListView([
@@ -455,6 +558,40 @@ class BrowserScreenState extends State<BrowserScreen> {
                         }
                       },
                     );
+
+                    // Schnell-Puffer-Knopf aus Vorschaukarten im Feed
+                    controller.addJavaScriptHandler(
+                      handlerName: 'pufferOpenAndBufferTarget',
+                      callback: (args) {
+                        if (args.isNotEmpty && args[0] is Map) {
+                          final data = Map<String, dynamic>.from(args[0] as Map);
+                          final targetUrl = data['targetUrl'] as String? ?? '';
+                          if (targetUrl.isNotEmpty) {
+                            loadUrl(targetUrl);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Row(
+                                  children: [
+                                    Icon(Icons.bolt, color: Color(0xFF00E676), size: 20),
+                                    SizedBox(width: 10),
+                                    Expanded(
+                                      child: Text(
+                                        'Öffne Video ohne Werbung zum Direkt-Puffern...',
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                backgroundColor: Color(0xFF1B5E20),
+                                duration: Duration(seconds: 2),
+                                behavior: SnackBarBehavior.floating,
+                              ),
+                            );
+                          }
+                        }
+                      },
+                    );
                   },
                   shouldOverrideUrlLoading: (controller, navigationAction) async {
                     final uri = navigationAction.request.url;
@@ -471,14 +608,28 @@ class BrowserScreenState extends State<BrowserScreen> {
                   },
                   shouldInterceptRequest: (controller, request) async {
                     final url = request.url.toString();
+
+                    // 1. INTEGRIERTER WERBEBLOCKER: Pre-Roll Video-Ads nativ blockieren!
+                    if (isAdUrl(url)) {
+                      return WebResourceResponse(
+                        contentType: 'text/plain',
+                        data: Uint8List(0),
+                        statusCode: 204,
+                        reasonPhrase: 'No Content',
+                      );
+                    }
+
+                    // 2. Echte Video-Streams abfangen
                     final lower = url.toLowerCase();
                     if ((lower.contains('.mp4') || lower.contains('.webm') || lower.contains('.m4v')) &&
                         !lower.startsWith('blob:') &&
                         !lower.startsWith('data:')) {
+                      final isPrev = lower.contains('preview') || lower.contains('teaser') || lower.contains('hover');
                       _onVideoDetected({
                         'videoUrl': url,
                         'pageUrl': _currentUrl,
                         'pageTitle': _currentTitle,
+                        'isPreview': isPrev,
                       });
                     }
                     return null;
@@ -553,17 +704,26 @@ class BrowserScreenState extends State<BrowserScreen> {
                                 color: const Color(0xFF00E676).withOpacity(0.15),
                                 shape: BoxShape.circle,
                               ),
-                              child: const Icon(Icons.videocam, color: Color(0xFF00E676), size: 20),
+                              child: const Icon(Icons.shield, color: Color(0xFF00E676), size: 18),
                             ),
                             const SizedBox(width: 10),
                             Expanded(
-                              child: Text(
-                                '$detectedCount Video${detectedCount > 1 ? "s" : ""} erkannt',
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
-                                ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '$detectedCount Video${detectedCount > 1 ? "s" : ""} erkannt',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 14,
+                                    ),
+                                  ),
+                                  const Text(
+                                    '🛡️ Werbefilter aktiv',
+                                    style: TextStyle(color: Color(0xFF00E676), fontSize: 11),
+                                  ),
+                                ],
                               ),
                             ),
                             IconButton(
@@ -585,10 +745,10 @@ class BrowserScreenState extends State<BrowserScreen> {
                         if (_showVideoDrawer) ...[
                           const Divider(color: Colors.white12, height: 16),
                           ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 220),
+                            constraints: const BoxConstraints(maxHeight: 240),
                             child: ListView(
                               shrinkWrap: true,
-                              children: _detectedVideos.values.map((v) {
+                              children: sortedVideos.map((v) {
                                 final existing = widget.bufferService.findItemByUrl(v.videoUrl);
                                 final isBuffered = existing?.isOfflineAvailable ?? false;
                                 final isDownloading = existing?.status == VideoStatus.downloading;
@@ -619,17 +779,41 @@ class BrowserScreenState extends State<BrowserScreen> {
                                         child: Column(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            Text(
-                                              v.pageTitle.isNotEmpty ? v.pageTitle : 'Web-Video',
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 13,
-                                                fontWeight: FontWeight.w500,
-                                              ),
+                                            Row(
+                                              children: [
+                                                Container(
+                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                  decoration: BoxDecoration(
+                                                    color: v.isPreview
+                                                        ? Colors.blueGrey.withOpacity(0.3)
+                                                        : const Color(0xFF00E676).withOpacity(0.18),
+                                                    borderRadius: BorderRadius.circular(4),
+                                                  ),
+                                                  child: Text(
+                                                    v.isPreview ? '🎞️ Vorschau' : '🎬 Hauptvideo',
+                                                    style: TextStyle(
+                                                      color: v.isPreview ? Colors.white70 : const Color(0xFF00E676),
+                                                      fontSize: 10,
+                                                      fontWeight: FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 6),
+                                                Expanded(
+                                                  child: Text(
+                                                    v.pageTitle.isNotEmpty ? v.pageTitle : 'Web-Video',
+                                                    maxLines: 1,
+                                                    overflow: TextOverflow.ellipsis,
+                                                    style: const TextStyle(
+                                                      color: Colors.white,
+                                                      fontSize: 13,
+                                                      fontWeight: FontWeight.w500,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ],
                                             ),
-                                            const SizedBox(height: 2),
+                                            const SizedBox(height: 3),
                                             if (isDownloading)
                                               Text(
                                                 'Wird gepuffert... ${(existing!.progress * 100).toInt()}%',
@@ -647,9 +831,11 @@ class BrowserScreenState extends State<BrowserScreen> {
                                                 ),
                                               )
                                             else
-                                              const Text(
-                                                'Checkbox antippen zum 5h-Puffern',
-                                                style: TextStyle(
+                                              Text(
+                                                v.isPreview
+                                                    ? 'Kurzer Vorschau-Teaser (antippen zum Puffern)'
+                                                    : 'Vollständiges Video (antippen zum Puffern)',
+                                                style: const TextStyle(
                                                   color: Colors.white38,
                                                   fontSize: 11,
                                                 ),
@@ -700,11 +886,15 @@ class DetectedVideo {
   final String pageUrl;
   final String pageTitle;
   final DateTime detectedAt;
+  final bool isPreview;
+  final double? duration;
 
   DetectedVideo({
     required this.videoUrl,
     required this.pageUrl,
     required this.pageTitle,
     required this.detectedAt,
+    this.isPreview = false,
+    this.duration,
   });
 }
