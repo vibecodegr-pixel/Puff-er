@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -137,31 +136,33 @@ class BufferService extends ChangeNotifier {
         lower.contains('vmap');
   }
 
-  Future<Map<String, String>> _buildHeaders({
+  /// Löst relative HLS-Playlist- und Segment-URLs auf und erhält dabei zwingend
+  /// notwendige CDN-Signatur- und HMAC-Tokens der Basis-Playlist (z.B. validfrom, validto, hash).
+  String _resolveHlsUrl(String basePlaylistUrl, String relativeOrAbsoluteUrl) {
+    try {
+      final baseUri = Uri.parse(basePlaylistUrl);
+      final resolved = baseUri.resolve(relativeOrAbsoluteUrl.trim());
+      // Falls der abgeleitete Pfad keine eigenen Query-Parameter hat, aber die Basis-Playlist ein Token besitzt:
+      if (resolved.query.isEmpty && baseUri.query.isNotEmpty) {
+        return resolved.replace(query: baseUri.query).toString();
+      }
+      return resolved.toString();
+    } catch (_) {
+      return relativeOrAbsoluteUrl;
+    }
+  }
+
+  Map<String, String> _buildHeaders({
     required String videoUrl,
     String? motherPageUrl,
-  }) async {
+  }) {
     final headers = <String, String>{
       'User-Agent':
           'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
       'Accept': '*/*',
-      'Accept-Encoding': 'identity',
     };
     if (motherPageUrl != null && motherPageUrl.startsWith('http')) {
       headers['Referer'] = motherPageUrl;
-      final uri = Uri.tryParse(motherPageUrl);
-      if (uri != null && uri.hasScheme && uri.hasAuthority) {
-        headers['Origin'] = '${uri.scheme}://${uri.authority}';
-      }
-      try {
-        final cookies = await CookieManager.instance().getCookies(url: WebUri(motherPageUrl));
-        if (cookies.isNotEmpty) {
-          final cookieHeader = cookies.map((c) => '${c.name}=${c.value}').join('; ');
-          headers['Cookie'] = cookieHeader;
-        }
-      } catch (e) {
-        debugPrint('Konnte Cookies für $motherPageUrl nicht lesen: $e');
-      }
     }
     return headers;
   }
@@ -177,7 +178,7 @@ class BufferService extends ChangeNotifier {
       return _probedSizes[videoUrl];
     }
 
-    final headers = await _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
+    final headers = _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
 
     // HLS Playlist (.m3u8) abfangen und Gesamtdauer / geschätzte Größe analysieren
     if (videoUrl.contains('.m3u8')) {
@@ -187,34 +188,50 @@ class BufferService extends ChangeNotifier {
           options: Options(
             headers: headers,
             responseType: ResponseType.plain,
-            sendTimeout: const Duration(seconds: 6),
-            receiveTimeout: const Duration(seconds: 6),
+            sendTimeout: const Duration(seconds: 8),
+            receiveTimeout: const Duration(seconds: 8),
             validateStatus: (s) => s != null && s >= 200 && s < 400,
           ),
         );
         String playlist = res.data ?? '';
         String mediaUrl = videoUrl;
+        int bandwidth = 0;
 
-        // Falls Master-Playlist, ersten/besten Stream holen
+        // Falls Master-Playlist, passenden oder besten Stream holen
         if (playlist.contains('#EXT-X-STREAM-INF')) {
           final lines = playlist.split('\n');
+          String? bestVariant;
+          int maxBw = 0;
+          int curBw = 0;
           for (final line in lines) {
             final trimmed = line.trim();
-            if (trimmed.isNotEmpty && !trimmed.startsWith('#')) {
-              mediaUrl = Uri.parse(videoUrl).resolve(trimmed).toString();
-              final mediaRes = await _dio.get<String>(
-                mediaUrl,
-                options: Options(
-                  headers: headers,
-                  responseType: ResponseType.plain,
-                  sendTimeout: const Duration(seconds: 6),
-                  receiveTimeout: const Duration(seconds: 6),
-                  validateStatus: (s) => s != null && s >= 200 && s < 400,
-                ),
-              );
-              playlist = mediaRes.data ?? '';
-              break;
+            if (trimmed.startsWith('#EXT-X-STREAM-INF')) {
+              final bwMatch = RegExp(r'BANDWIDTH=(\d+)').firstMatch(trimmed);
+              if (bwMatch != null) {
+                curBw = int.tryParse(bwMatch.group(1) ?? '0') ?? 0;
+              }
+            } else if (trimmed.isNotEmpty && !trimmed.startsWith('#')) {
+              if (bestVariant == null || curBw >= maxBw) {
+                bestVariant = trimmed;
+                maxBw = curBw;
+              }
+              curBw = 0;
             }
+          }
+          if (bestVariant != null) {
+            bandwidth = maxBw;
+            mediaUrl = _resolveHlsUrl(videoUrl, bestVariant);
+            final mediaRes = await _dio.get<String>(
+              mediaUrl,
+              options: Options(
+                headers: headers,
+                responseType: ResponseType.plain,
+                sendTimeout: const Duration(seconds: 8),
+                receiveTimeout: const Duration(seconds: 8),
+                validateStatus: (s) => s != null && s >= 200 && s < 400,
+              ),
+            );
+            playlist = mediaRes.data ?? '';
           }
         }
 
@@ -226,8 +243,9 @@ class BufferService extends ChangeNotifier {
         }
 
         if (totalDur > 0) {
-          // Schätze ~ 2.4 MBit/s (300 KB/s)
-          final estimatedBytes = (totalDur * 300 * 1024).round();
+          // Bandbreite in Bytes pro Sekunde (Bandbreite in Bit/s / 8)
+          final bytesPerSec = bandwidth > 0 ? (bandwidth / 8.0) : (280 * 1024.0);
+          final estimatedBytes = (totalDur * bytesPerSec).round();
           _probedSizes[videoUrl] = estimatedBytes;
           return estimatedBytes;
         }
@@ -369,7 +387,7 @@ class BufferService extends ChangeNotifier {
       }
 
       final savePath = '${videosDir.path}/puffer_${item.id}$extension';
-      final headers = await _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
+      final headers = _buildHeaders(videoUrl: videoUrl, motherPageUrl: motherPageUrl);
 
       if (videoUrl.contains('.m3u8')) {
         await _downloadHlsVideo(
@@ -486,6 +504,8 @@ class BufferService extends ChangeNotifier {
         headers: headers,
         responseType: ResponseType.plain,
         validateStatus: (s) => s != null && s >= 200 && s < 400,
+        sendTimeout: const Duration(seconds: 12),
+        receiveTimeout: const Duration(seconds: 12),
       ),
       cancelToken: cancelToken,
     );
@@ -516,13 +536,15 @@ class BufferService extends ChangeNotifier {
       }
 
       if (bestVariantUrl != null) {
-        mediaPlaylistUrl = Uri.parse(videoUrl).resolve(bestVariantUrl).toString();
+        mediaPlaylistUrl = _resolveHlsUrl(videoUrl, bestVariantUrl);
         final mediaRes = await _dio.get<String>(
           mediaPlaylistUrl,
           options: Options(
             headers: headers,
             responseType: ResponseType.plain,
             validateStatus: (s) => s != null && s >= 200 && s < 400,
+            sendTimeout: const Duration(seconds: 12),
+            receiveTimeout: const Duration(seconds: 12),
           ),
           cancelToken: cancelToken,
         );
@@ -535,8 +557,15 @@ class BufferService extends ChangeNotifier {
 
     for (int i = 0; i < lines.length; i++) {
       final line = lines[i].trim();
-      if (line.isNotEmpty && !line.startsWith('#')) {
-        final segFullUrl = Uri.parse(mediaPlaylistUrl).resolve(line).toString();
+      if (line.startsWith('#EXT-X-MAP:')) {
+        // Init-Segment für fMP4 (fragmented MP4)
+        final uriMatch = RegExp(r'URI="([^"]+)"').firstMatch(line);
+        if (uriMatch != null) {
+          final initUrl = _resolveHlsUrl(mediaPlaylistUrl, uriMatch.group(1)!);
+          segmentUrls.add(initUrl);
+        }
+      } else if (line.isNotEmpty && !line.startsWith('#')) {
+        final segFullUrl = _resolveHlsUrl(mediaPlaylistUrl, line);
         segmentUrls.add(segFullUrl);
       }
     }
@@ -549,21 +578,23 @@ class BufferService extends ChangeNotifier {
     if (await outputFile.exists()) {
       await outputFile.delete();
     }
-    final raf = await outputFile.open(mode: FileMode.writeOnlyAppend);
+    final raf = await outputFile.open(mode: FileMode.write);
 
     int downloadedSegments = 0;
     int totalBytesAccumulated = 0;
     DateTime lastTelemetryTime = DateTime.now();
     int lastTelemetryBytes = 0;
+    String? lastSegError;
 
     try {
-      for (final segUrl in segmentUrls) {
+      for (int i = 0; i < segmentUrls.length; i++) {
+        final segUrl = segmentUrls[i];
         if (cancelToken.isCancelled) {
           throw Exception('Download abgebrochen');
         }
 
         List<int>? bytes;
-        for (int attempt = 0; attempt < 2; attempt++) {
+        for (int attempt = 0; attempt < 3; attempt++) {
           try {
             final segRes = await _dio.get<List<int>>(
               segUrl,
@@ -571,28 +602,39 @@ class BufferService extends ChangeNotifier {
                 headers: headers,
                 responseType: ResponseType.bytes,
                 validateStatus: (s) => s != null && s >= 200 && s < 400,
+                sendTimeout: const Duration(seconds: 15),
                 receiveTimeout: const Duration(seconds: 25),
               ),
               cancelToken: cancelToken,
             );
-            bytes = segRes.data;
-            if (bytes != null && bytes.isNotEmpty) break;
+            if (segRes.data is List<int>) {
+              bytes = segRes.data;
+              if (bytes != null && bytes.isNotEmpty) break;
+            }
           } catch (e) {
+            lastSegError = e.toString();
             if (cancelToken.isCancelled) rethrow;
-            if (attempt == 0) await Future.delayed(const Duration(milliseconds: 500));
+            if (attempt < 2) await Future.delayed(const Duration(milliseconds: 600));
           }
         }
 
         if (bytes != null && bytes.isNotEmpty) {
           await raf.writeFrom(bytes);
           totalBytesAccumulated += bytes.length;
+          downloadedSegments++;
+        } else {
+          // Falls bereits die ersten Segmente fehlschlagen, direkt mit Fehler abbrechen
+          if (downloadedSegments == 0 && i >= 2) {
+            throw Exception('Streaming-Server verweigert Segment-Download (${lastSegError ?? "HTTP-Fehler"}).');
+          }
         }
 
-        downloadedSegments++;
         item.downloadedBytes = totalBytesAccumulated;
         item.progress = (downloadedSegments / segmentUrls.length).clamp(0.0, 1.0);
 
-        final estimatedTotal = (totalBytesAccumulated / downloadedSegments * segmentUrls.length).round();
+        final estimatedTotal = downloadedSegments > 0
+            ? (totalBytesAccumulated / downloadedSegments * segmentUrls.length).round()
+            : (item.totalBytes > 0 ? item.totalBytes : 0);
         item.totalBytes = estimatedTotal;
         item.fileSizeBytes = estimatedTotal;
 
@@ -604,7 +646,7 @@ class BufferService extends ChangeNotifier {
             final speed = diffBytes / (elapsedMs / 1000.0);
             item.downloadSpeedBytesPerSec = speed;
             final remainingSegments = segmentUrls.length - downloadedSegments;
-            final avgSegBytes = totalBytesAccumulated / downloadedSegments;
+            final avgSegBytes = downloadedSegments > 0 ? (totalBytesAccumulated / downloadedSegments) : 0;
             final remainingBytes = remainingSegments * avgSegBytes;
             if (speed > 0) {
               item.estimatedRemainingTime = Duration(seconds: (remainingBytes / speed).ceil());
@@ -614,6 +656,10 @@ class BufferService extends ChangeNotifier {
           lastTelemetryBytes = totalBytesAccumulated;
           notifyListeners();
         }
+      }
+
+      if (totalBytesAccumulated == 0) {
+        throw Exception('Keine Video-Daten empfangen (${lastSegError ?? "Unbekannter Fehler"}).');
       }
     } finally {
       await raf.close();

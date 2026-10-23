@@ -1,3 +1,11 @@
+// Version v0.1.013
+// - HLS-Download-Absturz behoben: CDN-Token-Vererbung (_resolveHlsUrl) verhindert 403-Forbidden-Fehler bei relativen Segment- und fMP4-Init-URLs
+// - Blockierende CookieManager-Aufrufe entfernt: Vermeidet Deadlocks bei gleichzeitiger Größenanalyse mehrerer Videos
+// - Master-Stream-Schutz: Signierte CDN-URLs (mit HMAC-Tokens wie validfrom/hash) bleiben 100% unberührt und werden nicht durch URL-Normalisierung verfälscht
+// - Fragmented MP4 (fMP4) Support: Berücksichtigt #EXT-X-MAP:URI Init-Header beim Zusammenfügen von HLS-Streams
+// - Genaue Dateigrößen-Berechnung: Ermittelt aus HLS-Bandbreite und Gesamtdauer die exakten Megabytes für 1080p, 720p und 480p Streams (kein 'Unbekannt' mehr)
+// - Sichtbare Fehlerdiagnose im Browser-Banner & Drawer: Kein stilles Verschwinden des Downloads mehr; Fehlermeldungen und 'Erneut versuchen'-Knopf direkt in der UI
+// 
 // Version v0.1.012
 // - Automatische Smartphone-Benachrichtigung via Gmail: CI/CD-Pipeline und Build-Prozess benachrichtigen das Google-Konto (guido.reffke@googlemail.com) bei Fertigstellung per E-Mail
 // - Google Drive Statusdatei (Puff-er_v0.1.011_FERTIG.txt) direkt in 'Meine Ablage' für sofortige Drive-Synchronisation angelegt
