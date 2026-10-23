@@ -333,15 +333,31 @@ class BrowserScreenState extends State<BrowserScreen> {
     final duration = (data['duration'] is num) ? (data['duration'] as num).toDouble() : null;
 
     if (!_detectedVideos.containsKey(videoUrl)) {
+      final item = DetectedVideo(
+        videoUrl: videoUrl,
+        pageUrl: pageUrl,
+        pageTitle: pageTitle,
+        detectedAt: DateTime.now(),
+        isPreview: isPreview,
+        duration: duration,
+        isProbingSize: true,
+      );
       setState(() {
-        _detectedVideos[videoUrl] = DetectedVideo(
-          videoUrl: videoUrl,
-          pageUrl: pageUrl,
-          pageTitle: pageTitle,
-          detectedAt: DateTime.now(),
-          isPreview: isPreview,
-          duration: duration,
-        );
+        _detectedVideos[videoUrl] = item;
+      });
+      _probeVideoSize(item);
+    }
+  }
+
+  void _probeVideoSize(DetectedVideo item) async {
+    final size = await widget.bufferService.probeVideoSize(
+      videoUrl: item.videoUrl,
+      motherPageUrl: item.pageUrl,
+    );
+    if (mounted && _detectedVideos.containsKey(item.videoUrl)) {
+      setState(() {
+        item.fileSizeBytes = size;
+        item.isProbingSize = false;
       });
     }
   }
@@ -379,15 +395,22 @@ class BrowserScreenState extends State<BrowserScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Sortiere Hauptvideos vor Vorschau-Videos
+    // Sortiere nach Dateigröße (größtes Video zuerst!), dann Nicht-Vorschau vor Vorschau
     final sortedVideos = _detectedVideos.values.toList()
       ..sort((a, b) {
+        final aSize = a.fileSizeBytes ?? -1;
+        final bSize = b.fileSizeBytes ?? -1;
+        if (aSize != bSize) {
+          return bSize.compareTo(aSize); // Größtes Video ganz oben!
+        }
         if (!a.isPreview && b.isPreview) return -1;
         if (a.isPreview && !b.isPreview) return 1;
-        return 0;
+        return b.detectedAt.compareTo(a.detectedAt);
       });
 
     final detectedCount = sortedVideos.length;
+    final maxSizeBytes = sortedVideos.map((v) => v.fileSizeBytes ?? 0).fold(0, (prev, s) => s > prev ? s : prev);
+    final largestVideo = sortedVideos.isNotEmpty ? sortedVideos.first : null;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -674,207 +697,425 @@ class BrowserScreenState extends State<BrowserScreen> {
           ),
 
           // Schwebender Video-Erkennungs-Banner am unteren Bildschirmrand
-          if (detectedCount > 0)
-            Positioned(
-              left: 16,
-              right: 16,
-              bottom: 16,
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 250),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF1E1E1E).withOpacity(0.95),
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: const Color(0xFF00E676).withOpacity(0.4), width: 1.5),
-                  boxShadow: const [
-                    BoxShadow(color: Colors.black54, blurRadius: 16, offset: Offset(0, 4)),
-                  ],
-                ),
-                child: Material(
-                  color: Colors.transparent,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Row(
-                          children: [
+          // Schwebender Video-Erkennungs- und Download-Banner am unteren Bildschirmrand
+          AnimatedBuilder(
+            animation: widget.bufferService,
+            builder: (context, _) {
+              final activeDownloads = widget.bufferService.activeDownloads;
+              if (detectedCount == 0 && activeDownloads.isEmpty) {
+                return const SizedBox.shrink();
+              }
+
+              final primaryDownload = activeDownloads.isNotEmpty ? activeDownloads.first : null;
+              final isLargestBuffered = largestVideo != null && (widget.bufferService.findItemByUrl(largestVideo.videoUrl)?.isOfflineAvailable ?? false);
+              final isLargestDownloading = largestVideo != null && (widget.bufferService.findItemByUrl(largestVideo.videoUrl)?.status == VideoStatus.downloading);
+
+              return Positioned(
+                left: 14,
+                right: 14,
+                bottom: 14,
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E).withOpacity(0.96),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(
+                      color: activeDownloads.isNotEmpty
+                          ? const Color(0xFF00E676)
+                          : const Color(0xFF00E676).withOpacity(0.4),
+                      width: 1.5,
+                    ),
+                    boxShadow: const [
+                      BoxShadow(color: Colors.black87, blurRadius: 18, offset: Offset(0, 4)),
+                    ],
+                  ),
+                  child: Material(
+                    color: Colors.transparent,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          // 1. Live-Download-Fortschrittsbalken falls ein Video gerade gepuffert wird
+                          if (primaryDownload != null) ...[
                             Container(
-                              padding: const EdgeInsets.all(6),
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                              margin: const EdgeInsets.only(bottom: 8),
                               decoration: BoxDecoration(
-                                color: const Color(0xFF00E676).withOpacity(0.15),
-                                shape: BoxShape.circle,
+                                color: const Color(0xFF1B5E20).withOpacity(0.35),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: const Color(0xFF00E676).withOpacity(0.4)),
                               ),
-                              child: const Icon(Icons.shield, color: Color(0xFF00E676), size: 18),
-                            ),
-                            const SizedBox(width: 10),
-                            Expanded(
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text(
-                                    '$detectedCount Video${detectedCount > 1 ? "s" : ""} erkannt',
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 14,
+                                  Row(
+                                    children: [
+                                      const Icon(Icons.downloading, color: Color(0xFF00E676), size: 16),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          primaryDownload.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 12.5,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 6),
+                                      Text(
+                                        primaryDownload.progress >= 0
+                                            ? '${(primaryDownload.progress * 100).toInt()}%'
+                                            : 'Lädt...',
+                                        style: const TextStyle(
+                                          color: Color(0xFF00E676),
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 12.5,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 6),
+                                  ClipRRect(
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: LinearProgressIndicator(
+                                      value: primaryDownload.progress >= 0 ? primaryDownload.progress : null,
+                                      minHeight: 6,
+                                      backgroundColor: Colors.white12,
+                                      valueColor: const AlwaysStoppedAnimation(Color(0xFF00E676)),
                                     ),
                                   ),
-                                  const Text(
-                                    '🛡️ Werbefilter aktiv',
-                                    style: TextStyle(color: Color(0xFF00E676), fontSize: 11),
+                                  const SizedBox(height: 4),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        primaryDownload.downloadProgressText,
+                                        style: const TextStyle(
+                                          color: Color(0xFF00E676),
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                      Text(
+                                        primaryDownload.downloadEtaText,
+                                        style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                      ),
+                                    ],
                                   ),
                                 ],
                               ),
                             ),
-                            IconButton(
-                              icon: Icon(
-                                _showVideoDrawer ? Icons.expand_less : Icons.expand_more,
-                                color: Colors.white70,
-                              ),
-                              padding: EdgeInsets.zero,
-                              constraints: const BoxConstraints(),
-                              onPressed: () {
+                          ],
+
+                          // 2. Zusammenfassungsleiste der erkannten Videos dieser Seite
+                          if (detectedCount > 0)
+                            InkWell(
+                              onTap: () {
                                 setState(() {
                                   _showVideoDrawer = !_showVideoDrawer;
                                 });
                               },
-                            ),
-                          ],
-                        ),
-
-                        if (_showVideoDrawer) ...[
-                          const Divider(color: Colors.white12, height: 16),
-                          ConstrainedBox(
-                            constraints: const BoxConstraints(maxHeight: 240),
-                            child: ListView(
-                              shrinkWrap: true,
-                              children: sortedVideos.map((v) {
-                                final existing = widget.bufferService.findItemByUrl(v.videoUrl);
-                                final isBuffered = existing?.isOfflineAvailable ?? false;
-                                final isDownloading = existing?.status == VideoStatus.downloading;
-
-                                return Container(
-                                  margin: const EdgeInsets.only(bottom: 8),
-                                  padding: const EdgeInsets.all(8),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF2C2C2C),
-                                    borderRadius: BorderRadius.circular(8),
-                                  ),
-                                  child: Row(
-                                    children: [
-                                      Checkbox(
-                                        value: isBuffered || isDownloading,
-                                        activeColor: const Color(0xFF00E676),
-                                        checkColor: Colors.black,
-                                        onChanged: isBuffered || isDownloading
-                                            ? null
-                                            : (bool? checked) {
-                                                if (checked == true) {
-                                                  _triggerVideoBuffer(v.videoUrl, v.pageUrl, v.pageTitle);
-                                                }
-                                              },
+                              borderRadius: BorderRadius.circular(10),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(vertical: 4),
+                                child: Row(
+                                  children: [
+                                    Container(
+                                      padding: const EdgeInsets.all(6),
+                                      decoration: BoxDecoration(
+                                        color: const Color(0xFF00E676).withOpacity(0.15),
+                                        shape: BoxShape.circle,
                                       ),
-                                      const SizedBox(width: 6),
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: v.isPreview
-                                                        ? Colors.blueGrey.withOpacity(0.3)
-                                                        : const Color(0xFF00E676).withOpacity(0.18),
-                                                    borderRadius: BorderRadius.circular(4),
-                                                  ),
-                                                  child: Text(
-                                                    v.isPreview ? '🎞️ Vorschau' : '🎬 Hauptvideo',
-                                                    style: TextStyle(
-                                                      color: v.isPreview ? Colors.white70 : const Color(0xFF00E676),
-                                                      fontSize: 10,
-                                                      fontWeight: FontWeight.bold,
-                                                    ),
-                                                  ),
-                                                ),
-                                                const SizedBox(width: 6),
-                                                Expanded(
-                                                  child: Text(
-                                                    v.pageTitle.isNotEmpty ? v.pageTitle : 'Web-Video',
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontSize: 13,
-                                                      fontWeight: FontWeight.w500,
-                                                    ),
-                                                  ),
-                                                ),
-                                              ],
+                                      child: const Icon(Icons.video_library_outlined, color: Color(0xFF00E676), size: 18),
+                                    ),
+                                    const SizedBox(width: 10),
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '$detectedCount Video${detectedCount > 1 ? "s" : ""} auf dieser Seite',
+                                            style: const TextStyle(
+                                              color: Colors.white,
+                                              fontWeight: FontWeight.bold,
+                                              fontSize: 13.5,
                                             ),
-                                            const SizedBox(height: 3),
-                                            if (isDownloading)
-                                              Text(
-                                                'Wird gepuffert... ${(existing!.progress * 100).toInt()}%',
-                                                style: const TextStyle(
-                                                  color: Color(0xFF00E676),
-                                                  fontSize: 11,
-                                                ),
-                                              )
-                                            else if (isBuffered)
-                                              Text(
-                                                'Offline bereit (${existing!.remainingFormatted})',
-                                                style: const TextStyle(
-                                                  color: Colors.white70,
-                                                  fontSize: 11,
-                                                ),
-                                              )
-                                            else
-                                              Text(
-                                                v.isPreview
-                                                    ? 'Kurzer Vorschau-Teaser (antippen zum Puffern)'
-                                                    : 'Vollständiges Video (antippen zum Puffern)',
-                                                style: const TextStyle(
-                                                  color: Colors.white38,
-                                                  fontSize: 11,
-                                                ),
-                                              ),
-                                          ],
-                                        ),
-                                      ),
-                                      if (isDownloading)
-                                        SizedBox(
-                                          width: 20,
-                                          height: 20,
-                                          child: CircularProgressIndicator(
-                                            value: existing!.progress > 0 ? existing.progress : null,
-                                            strokeWidth: 2,
-                                            color: const Color(0xFF00E676),
                                           ),
-                                        )
-                                      else if (isBuffered)
-                                        const Icon(Icons.check_circle, color: Color(0xFF00E676), size: 20)
-                                      else
-                                        IconButton(
-                                          icon: const Icon(Icons.download, color: Color(0xFF00E676), size: 20),
+                                          if (largestVideo?.fileSizeBytes != null)
+                                            Text(
+                                              '🏆 Größtes: ${largestVideo!.formattedSize}',
+                                              style: const TextStyle(color: Color(0xFF00E676), fontSize: 11.5, fontWeight: FontWeight.w600),
+                                            )
+                                          else
+                                            const Text(
+                                              '🛡️ Größen werden ermittelt...',
+                                              style: TextStyle(color: Colors.white54, fontSize: 11),
+                                            ),
+                                        ],
+                                      ),
+                                    ),
+                                    if (largestVideo != null && !isLargestBuffered && !isLargestDownloading)
+                                      Padding(
+                                        padding: const EdgeInsets.only(right: 6),
+                                        child: ElevatedButton.icon(
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: const Color(0xFF00E676),
+                                            foregroundColor: Colors.black,
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                                          ),
+                                          icon: const Icon(Icons.bolt, size: 15),
+                                          label: Text(
+                                            largestVideo.fileSizeBytes != null
+                                                ? 'Größtes (${largestVideo.formattedSize})'
+                                                : 'Größtes laden',
+                                            style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
                                           onPressed: () {
-                                            _triggerVideoBuffer(v.videoUrl, v.pageUrl, v.pageTitle);
+                                            _triggerVideoBuffer(largestVideo.videoUrl, largestVideo.pageUrl, largestVideo.pageTitle);
                                           },
                                         ),
-                                    ],
-                                  ),
-                                );
-                              }).toList(),
+                                      ),
+                                    Icon(
+                                      _showVideoDrawer ? Icons.expand_less : Icons.expand_more,
+                                      color: Colors.white70,
+                                      size: 24,
+                                    ),
+                                  ],
+                                ),
+                              ),
                             ),
-                          ),
+
+                          // 3. Ausklappbare Liste aller Videos mit Dateigröße & Scroll-Funktion
+                          if (_showVideoDrawer && detectedCount > 0) ...[
+                            const Divider(color: Colors.white12, height: 16),
+                            const Align(
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'Tippe auf das gewünschte Video zum Puffern:',
+                                style: TextStyle(color: Colors.white54, fontSize: 11.5),
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            ConstrainedBox(
+                              constraints: BoxConstraints(
+                                maxHeight: MediaQuery.of(context).size.height * 0.42,
+                              ),
+                              child: ListView(
+                                shrinkWrap: true,
+                                children: sortedVideos.map((v) {
+                                  final existing = widget.bufferService.findItemByUrl(v.videoUrl);
+                                  final isBuffered = existing?.isOfflineAvailable ?? false;
+                                  final isDownloading = existing?.status == VideoStatus.downloading;
+                                  final isLargest = maxSizeBytes > 0 && v.fileSizeBytes == maxSizeBytes;
+
+                                  return Container(
+                                    margin: const EdgeInsets.only(bottom: 8),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF2C2C2C),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color: isLargest
+                                            ? const Color(0xFF00E676).withOpacity(0.55)
+                                            : Colors.white10,
+                                        width: isLargest ? 1.5 : 1.0,
+                                      ),
+                                    ),
+                                    child: Material(
+                                      color: Colors.transparent,
+                                      borderRadius: BorderRadius.circular(10),
+                                      child: InkWell(
+                                        borderRadius: BorderRadius.circular(10),
+                                        onTap: isBuffered || isDownloading
+                                            ? null
+                                            : () {
+                                                _triggerVideoBuffer(v.videoUrl, v.pageUrl, v.pageTitle);
+                                              },
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(10),
+                                          child: Column(
+                                            crossAxisAlignment: CrossAxisAlignment.start,
+                                            children: [
+                                              Row(
+                                                children: [
+                                                  // Badge: Hauptvideo vs Vorschau
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: isLargest
+                                                          ? const Color(0xFF00E676)
+                                                          : v.isPreview || (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
+                                                              ? Colors.amber.withOpacity(0.2)
+                                                              : Colors.white12,
+                                                      borderRadius: BorderRadius.circular(4),
+                                                    ),
+                                                    child: Text(
+                                                      isLargest
+                                                          ? '🏆 Größte Datei (Hauptvideo)'
+                                                          : v.isPreview
+                                                              ? '🎞️ Vorschau'
+                                                              : (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
+                                                                  ? '⚠️ Klein / Snippet'
+                                                                  : '🎬 Video',
+                                                      style: TextStyle(
+                                                        color: isLargest
+                                                            ? Colors.black
+                                                            : v.isPreview || (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024)
+                                                                ? Colors.amberAccent
+                                                                : Colors.white70,
+                                                        fontSize: 10,
+                                                        fontWeight: FontWeight.bold,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  const Spacer(),
+                                                  // Prominente Dateigrößen-Anzeige
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: isLargest
+                                                          ? const Color(0xFF00E676).withOpacity(0.18)
+                                                          : const Color(0xFF1E1E1E),
+                                                      borderRadius: BorderRadius.circular(6),
+                                                      border: Border.all(
+                                                        color: isLargest
+                                                            ? const Color(0xFF00E676)
+                                                            : Colors.white12,
+                                                        width: 1,
+                                                      ),
+                                                    ),
+                                                    child: Row(
+                                                      mainAxisSize: MainAxisSize.min,
+                                                      children: [
+                                                        if (v.isProbingSize) ...[
+                                                          const SizedBox(
+                                                            width: 10,
+                                                            height: 10,
+                                                            child: CircularProgressIndicator(
+                                                              strokeWidth: 1.5,
+                                                              color: Colors.white70,
+                                                            ),
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                        ] else ...[
+                                                          Icon(
+                                                            Icons.sd_storage,
+                                                            size: 12,
+                                                            color: isLargest ? const Color(0xFF00E676) : Colors.white70,
+                                                          ),
+                                                          const SizedBox(width: 4),
+                                                        ],
+                                                        Text(
+                                                          v.formattedSize,
+                                                          style: TextStyle(
+                                                            color: isLargest ? const Color(0xFF00E676) : Colors.white,
+                                                            fontSize: 11.5,
+                                                            fontWeight: FontWeight.bold,
+                                                          ),
+                                                        ),
+                                                      ],
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                              const SizedBox(height: 6),
+                                              Text(
+                                                v.pageTitle.isNotEmpty ? v.pageTitle : 'Web-Video',
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontSize: 13,
+                                                  fontWeight: FontWeight.w600,
+                                                ),
+                                              ),
+                                              const SizedBox(height: 4),
+
+                                              // Download-Balkenanzeige oder Aktionszeile
+                                              if (isDownloading) ...[
+                                                ClipRRect(
+                                                  borderRadius: BorderRadius.circular(4),
+                                                  child: LinearProgressIndicator(
+                                                    value: existing!.progress >= 0 ? existing.progress : null,
+                                                    minHeight: 6,
+                                                    backgroundColor: Colors.white12,
+                                                    valueColor: const AlwaysStoppedAnimation(Color(0xFF00E676)),
+                                                  ),
+                                                ),
+                                                const SizedBox(height: 4),
+                                                Row(
+                                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                  children: [
+                                                    Text(
+                                                      existing.downloadProgressText,
+                                                      style: const TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w600),
+                                                    ),
+                                                    Text(
+                                                      existing.downloadEtaText,
+                                                      style: const TextStyle(color: Colors.white70, fontSize: 11),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ] else if (isBuffered) ...[
+                                                Row(
+                                                  children: [
+                                                    const Icon(Icons.check_circle, color: Color(0xFF00E676), size: 16),
+                                                    const SizedBox(width: 6),
+                                                    Text(
+                                                      'Offline bereit (${existing!.remainingFormatted})',
+                                                      style: const TextStyle(color: Color(0xFF00E676), fontSize: 11.5),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ] else ...[
+                                                Row(
+                                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                                  children: [
+                                                    Expanded(
+                                                      child: Text(
+                                                        isLargest
+                                                            ? 'Empfohlenes Video • Antippen zum Puffern'
+                                                            : (v.isPreview || (v.fileSizeBytes != null && v.fileSizeBytes! < 1.5 * 1024 * 1024))
+                                                                ? 'Kleiner Clip / Vorschau'
+                                                                : 'Antippen zum Puffern',
+                                                        style: const TextStyle(color: Colors.white38, fontSize: 11),
+                                                      ),
+                                                    ),
+                                                    IconButton(
+                                                      icon: const Icon(Icons.download, color: Color(0xFF00E676), size: 20),
+                                                      padding: EdgeInsets.zero,
+                                                      constraints: const BoxConstraints(),
+                                                      onPressed: () {
+                                                        _triggerVideoBuffer(v.videoUrl, v.pageUrl, v.pageTitle);
+                                                      },
+                                                    ),
+                                                  ],
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }).toList(),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -888,6 +1129,8 @@ class DetectedVideo {
   final DateTime detectedAt;
   final bool isPreview;
   final double? duration;
+  int? fileSizeBytes;
+  bool isProbingSize;
 
   DetectedVideo({
     required this.videoUrl,
@@ -896,5 +1139,23 @@ class DetectedVideo {
     required this.detectedAt,
     this.isPreview = false,
     this.duration,
+    this.fileSizeBytes,
+    this.isProbingSize = false,
   });
+
+  String get formattedSize {
+    if (fileSizeBytes == null || fileSizeBytes == 0) {
+      return isProbingSize ? 'Ermittle...' : 'Unbekannt';
+    }
+    final bytes = fileSizeBytes!;
+    if (bytes < 1024) {
+      return '$bytes B';
+    } else if (bytes < 1024 * 1024) {
+      return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    } else if (bytes < 1024 * 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    } else {
+      return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+    }
+  }
 }

@@ -63,6 +63,7 @@ class _PufferScreenState extends State<PufferScreen> {
       animation: widget.bufferService,
       builder: (context, _) {
         final bufferedItems = widget.bufferService.bufferedItems;
+        final activeDownloads = widget.bufferService.activeDownloads;
         final totalSize = widget.bufferService.formattedTotalBufferedSize;
 
         return Scaffold(
@@ -164,8 +165,105 @@ class _PufferScreenState extends State<PufferScreen> {
                 ),
               ),
 
+              // Aktive Downloads mit Echtzeit-Balkenanzeige & Restzeit
+              if (activeDownloads.isNotEmpty) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  color: const Color(0xFF1B5E20).withOpacity(0.25),
+                  child: Row(
+                    children: [
+                      const SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00E676)),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Wird gepuffert (${activeDownloads.length})',
+                        style: const TextStyle(
+                          color: Color(0xFF00E676),
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                ...activeDownloads.map((dl) => Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1E1E1E),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFF00E676).withOpacity(0.35)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              dl.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 13.5),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, color: Colors.white54, size: 18),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            tooltip: 'Abbrechen',
+                            onPressed: () => widget.bufferService.cancelDownload(dl.id),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        dl.motherPageHost,
+                        style: const TextStyle(color: Colors.white38, fontSize: 11.5),
+                      ),
+                      const SizedBox(height: 8),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(4),
+                        child: LinearProgressIndicator(
+                          value: dl.progress >= 0 ? dl.progress : null,
+                          minHeight: 8,
+                          backgroundColor: Colors.white12,
+                          valueColor: const AlwaysStoppedAnimation(Color(0xFF00E676)),
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            dl.downloadProgressText,
+                            style: const TextStyle(
+                              color: Color(0xFF00E676),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            dl.downloadEtaText,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                )),
+                const Divider(color: Colors.white10, height: 16),
+              ],
+
               Expanded(
-                child: bufferedItems.isEmpty
+                child: (bufferedItems.isEmpty && activeDownloads.isEmpty)
                     ? Center(
                         child: Padding(
                           padding: const EdgeInsets.all(32),

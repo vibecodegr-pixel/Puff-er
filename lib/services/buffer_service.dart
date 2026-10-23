@@ -30,6 +30,9 @@ class BufferService extends ChangeNotifier {
 
   List<VideoItem> get allItems => List.unmodifiable(_items);
 
+  /// Alle aktuell aktiv herunterladenden Videos mit Live-Telemetrie.
+  List<VideoItem> get activeDownloads => _items.where((i) => i.status == VideoStatus.downloading).toList();
+
   /// Alle aktuell offline verfügbaren Videos (noch innerhalb der 5h-Frist).
   List<VideoItem> get bufferedItems => _items.where((i) => i.isOfflineAvailable).toList();
 
@@ -119,6 +122,8 @@ class BufferService extends ChangeNotifier {
     }
   }
 
+  final Map<String, int> _probedSizes = {};
+
   bool _isAdUrl(String url) {
     final lower = url.toLowerCase();
     return lower.contains('doubleclick.net') ||
@@ -129,6 +134,95 @@ class BufferService extends ChangeNotifier {
         lower.contains('/pagead/') ||
         lower.contains('/video_ads/') ||
         lower.contains('vmap');
+  }
+
+  /// Ermittelt die Dateigröße eines Videos über HTTP HEAD oder Range GET (1 Byte),
+  /// ohne das gesamte Video herunterzuladen. Spart massiv Datenvolumen und Akku.
+  Future<int?> probeVideoSize({
+    required String videoUrl,
+    String? motherPageUrl,
+  }) async {
+    if (_isAdUrl(videoUrl)) return null;
+    if (_probedSizes.containsKey(videoUrl)) {
+      return _probedSizes[videoUrl];
+    }
+
+    final headers = <String, String>{
+      'User-Agent':
+          'Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36',
+      'Accept': '*/*',
+    };
+    if (motherPageUrl != null && motherPageUrl.startsWith('http')) {
+      headers['Referer'] = motherPageUrl;
+      final uri = Uri.tryParse(motherPageUrl);
+      if (uri != null && uri.hasScheme && uri.hasAuthority) {
+        headers['Origin'] = '${uri.scheme}://${uri.authority}';
+      }
+    }
+
+    // 1. HEAD-Anfrage (0 Byte Payload)
+    try {
+      final headRes = await _dio.head(
+        videoUrl,
+        options: Options(
+          headers: headers,
+          followRedirects: true,
+          validateStatus: (status) => status != null && status >= 200 && status < 400,
+          sendTimeout: const Duration(seconds: 4),
+          receiveTimeout: const Duration(seconds: 4),
+        ),
+      );
+      final cl = headRes.headers.value('content-length');
+      if (cl != null) {
+        final bytes = int.tryParse(cl);
+        if (bytes != null && bytes > 0) {
+          _probedSizes[videoUrl] = bytes;
+          return bytes;
+        }
+      }
+    } catch (_) {
+      // CDNs blockieren HEAD oft mit 403 oder 405 -> Fallback auf Range GET
+    }
+
+    // 2. Fallback: Range-GET-Anfrage (nur 1 Byte: bytes=0-0)
+    try {
+      final rangeHeaders = Map<String, String>.from(headers);
+      rangeHeaders['Range'] = 'bytes=0-0';
+      final rangeRes = await _dio.get(
+        videoUrl,
+        options: Options(
+          headers: rangeHeaders,
+          responseType: ResponseType.stream,
+          followRedirects: true,
+          validateStatus: (status) => status != null && status >= 200 && status < 400,
+          sendTimeout: const Duration(seconds: 5),
+          receiveTimeout: const Duration(seconds: 5),
+        ),
+      );
+
+      final contentRange = rangeRes.headers.value('content-range');
+      if (contentRange != null && contentRange.contains('/')) {
+        final totalStr = contentRange.split('/').last.trim();
+        final bytes = int.tryParse(totalStr);
+        if (bytes != null && bytes > 0) {
+          _probedSizes[videoUrl] = bytes;
+          return bytes;
+        }
+      }
+
+      final cl = rangeRes.headers.value('content-length');
+      if (cl != null) {
+        final bytes = int.tryParse(cl);
+        if (bytes != null && bytes > 0) {
+          _probedSizes[videoUrl] = bytes;
+          return bytes;
+        }
+      }
+    } catch (e) {
+      debugPrint('Größenermittlung fehlgeschlagen für $videoUrl: $e');
+    }
+
+    return null;
   }
 
   /// Startet den Download eines Videos in den 5-Stunden-Pufferspeicher.
@@ -168,6 +262,10 @@ class BufferService extends ChangeNotifier {
 
     item.status = VideoStatus.downloading;
     item.progress = 0.0;
+    item.downloadedBytes = 0;
+    item.totalBytes = _probedSizes[videoUrl] ?? 0;
+    item.downloadSpeedBytesPerSec = 0.0;
+    item.estimatedRemainingTime = null;
     item.errorMessage = null;
     notifyListeners();
 
@@ -210,6 +308,9 @@ class BufferService extends ChangeNotifier {
         }
       }
 
+      int lastReceived = 0;
+      DateTime lastTime = DateTime.now();
+
       await _dio.download(
         videoUrl,
         savePath,
@@ -219,9 +320,31 @@ class BufferService extends ChangeNotifier {
           validateStatus: (status) => status != null && status >= 200 && status < 400,
         ),
         onReceiveProgress: (received, total) {
+          final now = DateTime.now();
+          final elapsedMs = now.difference(lastTime).inMilliseconds;
+
+          item.downloadedBytes = received;
           if (total > 0) {
-            item.progress = received / total;
-            item.fileSizeBytes = received;
+            item.totalBytes = total;
+            item.fileSizeBytes = total;
+            item.progress = (received / total).clamp(0.0, 1.0);
+          } else {
+            item.progress = -1.0;
+          }
+
+          if (elapsedMs >= 350 || (total > 0 && received >= total)) {
+            final bytesDiff = received - lastReceived;
+            if (bytesDiff > 0 && elapsedMs > 0) {
+              final speed = (bytesDiff / (elapsedMs / 1000.0));
+              item.downloadSpeedBytesPerSec = speed;
+              if (total > 0 && speed > 0) {
+                final remainingBytes = total - received;
+                final sec = (remainingBytes / speed).ceil();
+                item.estimatedRemainingTime = Duration(seconds: sec > 0 ? sec : 0);
+              }
+            }
+            lastReceived = received;
+            lastTime = now;
             notifyListeners();
           }
         },
@@ -250,10 +373,13 @@ class BufferService extends ChangeNotifier {
 
         item.localFilePath = savePath;
         item.fileSizeBytes = fileSize;
+        item.downloadedBytes = fileSize;
+        item.totalBytes = fileSize;
         item.bufferedAt = DateTime.now();
         item.expiresAt = DateTime.now().add(bufferTtl);
         item.status = VideoStatus.buffered;
         item.progress = 1.0;
+        item.estimatedRemainingTime = Duration.zero;
       } else {
         throw Exception('Datei konnte nicht im temporären Speicher angelegt werden.');
       }

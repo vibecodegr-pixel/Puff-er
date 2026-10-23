@@ -307,40 +307,61 @@ class _HistoryScreenState extends State<HistoryScreen> {
                                                 ),
                                             ],
                                           ),
-                                          const SizedBox(height: 8),
-                                          // Status-Badge
-                                          Row(
-                                            children: [
-                                              if (isDownloading)
+                                          if (isDownloading) ...[
+                                            const SizedBox(height: 8),
+                                            ClipRRect(
+                                              borderRadius: BorderRadius.circular(4),
+                                              child: LinearProgressIndicator(
+                                                value: item.progress >= 0 ? item.progress : null,
+                                                minHeight: 6,
+                                                backgroundColor: Colors.white12,
+                                                valueColor: const AlwaysStoppedAnimation(Color(0xFF00E676)),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 4),
+                                            Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
                                                 Text(
-                                                  'Wird gepuffert... ${(item.progress * 100).toInt()}%',
-                                                  style: const TextStyle(color: Color(0xFF00E676), fontSize: 11),
-                                                )
-                                              else if (isBuffered)
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: const Color(0xFF00E676).withOpacity(0.12),
-                                                    borderRadius: BorderRadius.circular(6),
-                                                  ),
-                                                  child: Text(
-                                                    '🟢 Offline bereit (${item.remainingFormatted})',
-                                                    style: const TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w600),
-                                                  ),
-                                                )
-                                              else
-                                                Container(
-                                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                                                  decoration: BoxDecoration(
-                                                    color: Colors.white.withOpacity(0.06),
-                                                    borderRadius: BorderRadius.circular(6),
-                                                  ),
-                                                  child: const Text(
-                                                    '⚪ 5h-Puffer abgelaufen (Datei gelöscht)',
-                                                    style: TextStyle(color: Colors.white54, fontSize: 11),
-                                                  ),
+                                                  item.downloadProgressText,
+                                                  style: const TextStyle(color: Color(0xFF00E676), fontSize: 11.5, fontWeight: FontWeight.w600),
                                                 ),
-                                              const Spacer(),
+                                                Text(
+                                                  item.downloadEtaText,
+                                                  style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+                                                ),
+                                              ],
+                                            ),
+                                          ] else ...[
+                                            const SizedBox(height: 8),
+                                            // Status-Badge
+                                            Row(
+                                              children: [
+                                                if (isBuffered)
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: const Color(0xFF00E676).withOpacity(0.12),
+                                                      borderRadius: BorderRadius.circular(6),
+                                                    ),
+                                                    child: Text(
+                                                      '🟢 Offline bereit (${item.remainingFormatted})',
+                                                      style: const TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w600),
+                                                    ),
+                                                  )
+                                                else
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: Colors.white.withOpacity(0.06),
+                                                      borderRadius: BorderRadius.circular(6),
+                                                    ),
+                                                    child: const Text(
+                                                      '⚪ 5h-Puffer abgelaufen (Datei gelöscht)',
+                                                      style: TextStyle(color: Colors.white54, fontSize: 11),
+                                                    ),
+                                                  ),
+                                                const Spacer(),
                                               IconButton(
                                                 padding: EdgeInsets.zero,
                                                 constraints: const BoxConstraints(),

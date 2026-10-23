@@ -21,6 +21,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   bool _showControls = true;
   Timer? _hideControlsTimer;
 
+  // Interaktives Scrubbing / Spulen per Finger-Drag
+  bool _isDraggingScrubber = false;
+  double _dragPositionMs = 0.0;
+  bool _wasPlayingBeforeDrag = false;
+
   @override
   void initState() {
     super.initState();
@@ -240,53 +245,145 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                   ),
                                 ),
 
-                                IconButton(
-                                  iconSize: 64,
-                                  icon: Icon(
-                                    _controller!.value.isPlaying
-                                        ? Icons.pause_circle_filled
-                                        : Icons.play_circle_filled,
-                                    color: Colors.white,
-                                  ),
-                                  onPressed: () {
-                                    if (_controller!.value.isPlaying) {
-                                      _controller!.pause();
-                                    } else {
-                                      _controller!.play();
-                                      _startHideTimer();
-                                    }
-                                  },
+                                // Zentrale Steuerung: 10s zurück, Play/Pause, 10s vor
+                                Row(
+                                  mainAxisAlignment: MainAxisAlignment.center,
+                                  children: [
+                                    IconButton(
+                                      iconSize: 42,
+                                      icon: const Icon(Icons.replay_10, color: Colors.white),
+                                      tooltip: '10 Sekunden zurück',
+                                      onPressed: () {
+                                        final cur = _controller!.value.position;
+                                        final target = cur - const Duration(seconds: 10);
+                                        _controller!.seekTo(target < Duration.zero ? Duration.zero : target);
+                                        _startHideTimer();
+                                      },
+                                    ),
+                                    const SizedBox(width: 20),
+                                    IconButton(
+                                      iconSize: 68,
+                                      icon: Icon(
+                                        _controller!.value.isPlaying
+                                            ? Icons.pause_circle_filled
+                                            : Icons.play_circle_filled,
+                                        color: const Color(0xFF00E676),
+                                      ),
+                                      onPressed: () {
+                                        if (_controller!.value.isPlaying) {
+                                          _controller!.pause();
+                                        } else {
+                                          _controller!.play();
+                                          _startHideTimer();
+                                        }
+                                      },
+                                    ),
+                                    const SizedBox(width: 20),
+                                    IconButton(
+                                      iconSize: 42,
+                                      icon: const Icon(Icons.forward_10, color: Colors.white),
+                                      tooltip: '10 Sekunden vor',
+                                      onPressed: () {
+                                        final cur = _controller!.value.position;
+                                        final dur = _controller!.value.duration;
+                                        final target = cur + const Duration(seconds: 10);
+                                        _controller!.seekTo(target > dur ? dur : target);
+                                        _startHideTimer();
+                                      },
+                                    ),
+                                  ],
                                 ),
 
-                                Padding(
-                                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                  child: Column(
-                                    children: [
-                                      VideoProgressIndicator(
-                                        _controller!,
-                                        allowScrubbing: true,
-                                        colors: const VideoProgressColors(
-                                          playedColor: Color(0xFF00E676),
-                                          bufferedColor: Colors.white30,
-                                          backgroundColor: Colors.white12,
-                                        ),
-                                      ),
-                                      const SizedBox(height: 6),
-                                      Row(
-                                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                // Interaktive Zeitleiste mit Finger-Drag-Spulen
+                                Builder(
+                                  builder: (context) {
+                                    final duration = _controller!.value.duration;
+                                    final position = _controller!.value.position;
+                                    final totalMs = duration.inMilliseconds.toDouble();
+                                    final currentMs = _isDraggingScrubber
+                                        ? _dragPositionMs
+                                        : position.inMilliseconds.toDouble();
+                                    final displayPos = _isDraggingScrubber
+                                        ? Duration(milliseconds: _dragPositionMs.toInt())
+                                        : position;
+
+                                    return Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                                      child: Column(
                                         children: [
-                                          Text(
-                                            _formatDuration(_controller!.value.position),
-                                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                          SliderTheme(
+                                            data: SliderTheme.of(context).copyWith(
+                                              trackHeight: 5.0,
+                                              activeTrackColor: const Color(0xFF00E676),
+                                              inactiveTrackColor: Colors.white24,
+                                              thumbColor: const Color(0xFF00E676),
+                                              thumbShape: const RoundSliderThumbShape(
+                                                enabledThumbRadius: 8.5,
+                                                pressedElevation: 6.0,
+                                              ),
+                                              overlayColor: const Color(0xFF00E676).withOpacity(0.25),
+                                              overlayShape: const RoundSliderOverlayShape(overlayRadius: 22.0),
+                                              trackShape: const RoundedRectSliderTrackShape(),
+                                            ),
+                                            child: Slider(
+                                              min: 0.0,
+                                              max: totalMs > 0 ? totalMs : 1.0,
+                                              value: totalMs > 0 ? currentMs.clamp(0.0, totalMs) : 0.0,
+                                              onChangeStart: (value) {
+                                                _hideControlsTimer?.cancel();
+                                                _wasPlayingBeforeDrag = _controller!.value.isPlaying;
+                                                if (_wasPlayingBeforeDrag) {
+                                                  _controller!.pause();
+                                                }
+                                                setState(() {
+                                                  _isDraggingScrubber = true;
+                                                  _dragPositionMs = value;
+                                                });
+                                              },
+                                              onChanged: (value) {
+                                                setState(() {
+                                                  _dragPositionMs = value;
+                                                });
+                                              },
+                                              onChangeEnd: (value) async {
+                                                final target = Duration(milliseconds: value.toInt());
+                                                await _controller!.seekTo(target);
+                                                if (mounted) {
+                                                  setState(() {
+                                                    _isDraggingScrubber = false;
+                                                  });
+                                                  if (_wasPlayingBeforeDrag) {
+                                                    _controller!.play();
+                                                  }
+                                                  _startHideTimer();
+                                                }
+                                              },
+                                            ),
                                           ),
-                                          Text(
-                                            _formatDuration(_controller!.value.duration),
-                                            style: const TextStyle(color: Colors.white70, fontSize: 12),
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                                            child: Row(
+                                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                              children: [
+                                                Text(
+                                                  _formatDuration(displayPos),
+                                                  style: TextStyle(
+                                                    color: _isDraggingScrubber ? const Color(0xFF00E676) : Colors.white70,
+                                                    fontSize: 12.5,
+                                                    fontWeight: _isDraggingScrubber ? FontWeight.bold : FontWeight.normal,
+                                                  ),
+                                                ),
+                                                Text(
+                                                  _formatDuration(duration),
+                                                  style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+                                                ),
+                                              ],
+                                            ),
                                           ),
                                         ],
                                       ),
-                                    ],
-                                  ),
+                                    );
+                                  },
                                 ),
                               ],
                             ),

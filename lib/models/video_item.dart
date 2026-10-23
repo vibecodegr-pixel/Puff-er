@@ -22,6 +22,12 @@ class VideoItem {
   double progress;
   String? errorMessage;
 
+  // Live-Download-Telemetrie
+  int downloadedBytes;
+  int totalBytes;
+  double downloadSpeedBytesPerSec;
+  Duration? estimatedRemainingTime;
+
   VideoItem({
     required this.id,
     required this.videoUrl,
@@ -35,6 +41,10 @@ class VideoItem {
     this.status = VideoStatus.idle,
     this.progress = 0.0,
     this.errorMessage,
+    this.downloadedBytes = 0,
+    this.totalBytes = 0,
+    this.downloadSpeedBytesPerSec = 0.0,
+    this.estimatedRemainingTime,
   });
 
   /// Prüft, ob das Video aktuell offline auf der Festplatte vorliegt und noch nicht abgelaufen ist.
@@ -81,6 +91,48 @@ class VideoItem {
     }
     final mb = kb / 1024;
     return '${mb.toStringAsFixed(1)} MB';
+  }
+
+  /// Formatierte Download-Fortschrittsanzeige (z.B. "45% (24.1 MB / 53.6 MB)").
+  String get downloadProgressText {
+    final percent = (progress.clamp(0.0, 1.0) * 100).toInt();
+    if (totalBytes > 0) {
+      final currentMb = (downloadedBytes / (1024 * 1024)).toStringAsFixed(1);
+      final totalMb = (totalBytes / (1024 * 1024)).toStringAsFixed(1);
+      return '$percent% ($currentMb MB / $totalMb MB)';
+    } else if (downloadedBytes > 0) {
+      final currentMb = (downloadedBytes / (1024 * 1024)).toStringAsFixed(1);
+      return '$currentMb MB geladen';
+    }
+    return 'Starte Download...';
+  }
+
+  /// Formatierte Restzeitanzeige (z.B. "Noch ca. 14 Sek. (3.2 MB/s)").
+  String get downloadEtaText {
+    if (estimatedRemainingTime != null && estimatedRemainingTime!.inSeconds > 0) {
+      final sec = estimatedRemainingTime!.inSeconds;
+      if (sec < 60) {
+        return 'Noch ca. $sec Sek. ($downloadSpeedFormatted)';
+      }
+      final min = sec ~/ 60;
+      final remSec = sec % 60;
+      return 'Noch ca. $min Min. ${remSec}s ($downloadSpeedFormatted)';
+    }
+    if (downloadSpeedBytesPerSec > 0) {
+      return downloadSpeedFormatted;
+    }
+    return 'Berechne Restzeit...';
+  }
+
+  /// Formatierte Download-Geschwindigkeit.
+  String get downloadSpeedFormatted {
+    if (downloadSpeedBytesPerSec <= 0) return '';
+    final kb = downloadSpeedBytesPerSec / 1024;
+    if (kb < 1024) {
+      return '${kb.toStringAsFixed(0)} KB/s';
+    }
+    final mb = kb / 1024;
+    return '${mb.toStringAsFixed(1)} MB/s';
   }
 
   Map<String, dynamic> toJson() {

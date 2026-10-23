@@ -1,3 +1,11 @@
+// Version v0.1.010
+// - Interaktive Zeitleiste im Video-Player: Flüssiges Spulen vor und zurück per Finger-Drag (Scrubbing) mit Slider-Thumb & Live-Zeitstempel
+// - 10-Sekunden-Vor- und Zurückspultasten (Replay 10 / Forward 10) in der Player-Steuerung integriert
+// - Automatische Video-Größenanalyse im Browser: ermittelt exakte Dateigröße (KB/MB) aller erkannten Videos via HTTP-HEAD/Range-Probe ohne Datenverbrauch
+// - Erkannte Videos nach Dateigröße absteigend sortiert (größtes Hauptvideo steht immer ganz oben und ist grün markiert)
+// - Echter Download-Fortschrittsbalken mit Live-Telemetrie: zeigt exakte MB (z.B. 24.1 MB / 53.6 MB), Prozentanzeige, Download-Speed und Restzeit (ETA)
+// - "Aktive Downloads"-Übersicht im Offline-Puffer und schwebenden Browser-Banner mit Live-Balkenanzeige und Abbruch-Option
+
 // Version v0.1.009
 // - Integrierter Video-AdBlocker: blockiert Pre-Roll Werbenetzwerke (Google IMA, DoubleClick, VMAP) direkt in shouldInterceptRequest
 // - Automatische Teaser- und Vorschau-Erkennung: unterscheidet Hauptvideos von kurzen Hover-/Vorschau-Loops
