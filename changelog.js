@@ -1,3 +1,8 @@
+// Version v0.1.003
+// - Gradle-Plugin-Deklaration in settings.gradle korrigiert (dev.flutter.flutter-gradle-plugin hinzugefügt)
+// - Android app/build.gradle optimiert (Kotlin-Plugin synchronisiert, redundante NDK-Bindung entfernt)
+// - CI-Workflow auf verbose-Logging erweitert für transparente Build-Diagnose
+
 // Version v0.1.002
 // - Zielverzeichnis G:\Meine Ablage\apk\Puff-er eingerichtet
 // - Automatisches Build- und Kopier-Skript build_apk.bat für den APK-Export bereitgestellt
