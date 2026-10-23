@@ -1,3 +1,7 @@
+// Version v0.1.012
+// - Automatische Smartphone-Benachrichtigung via Gmail: CI/CD-Pipeline und Build-Prozess benachrichtigen das Google-Konto (guido.reffke@googlemail.com) bei Fertigstellung per E-Mail
+// - Google Drive Statusdatei (Puff-er_v0.1.011_FERTIG.txt) direkt in 'Meine Ablage' für sofortige Drive-Synchronisation angelegt
+
 // Version v0.1.011
 // - Pornhub- & Tube-Streaming Deep-Extractor: scannt automatisch mediaDefinitions, flashvars und script-Tags nach echten Master-Streams (1080p, 720p, 480p) und markiert sie als Hauptvideo
 // - Spul-Segment-Spamfilter (Anti-Seek-Duplication): filtert interne 2-Sekunden-Transport-Chunks (seg-, frag-, .ts, .m4s, start=, range=) strikt heraus, sodass beim Hin- und Herspulen im Web-Player null Dummy-Einträge entstehen
