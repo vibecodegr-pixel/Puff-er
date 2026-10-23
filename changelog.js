@@ -1,3 +1,8 @@
+// Version v0.1.004
+// - Fehlendes App-Icon (ic_launcher.xml) in res/drawable hinzugefügt (AAPT2 Resource Linking behoben)
+// - AndroidManifest auf @drawable/ic_launcher umgestellt
+// - CI-Workflow bereinigt (Verbose-Flag entfernt für saubere, kompakte Fehlerausgabe)
+
 // Version v0.1.003
 // - Gradle-Plugin-Deklaration in settings.gradle korrigiert (dev.flutter.flutter-gradle-plugin hinzugefügt)
 // - Android app/build.gradle optimiert (Kotlin-Plugin synchronisiert, redundante NDK-Bindung entfernt)
