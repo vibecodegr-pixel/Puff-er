@@ -1,0 +1,27 @@
+name: puffer
+description: "Puff-er: Ressourcenschonender Offline-Video-Puffer mit In-App-Browser, 5h-TTL und Share-Target."
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_inappwebview: ^6.1.5
+  video_player: ^2.9.2
+  path_provider: ^2.1.5
+  dio: ^5.7.0
+  shared_preferences: ^2.3.3
+  intl: ^0.19.0
+  flutter_localizations:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true

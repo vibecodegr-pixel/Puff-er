@@ -1,0 +1,14 @@
+// Version v0.1.002
+// - Zielverzeichnis G:\Meine Ablage\apk\Puff-er eingerichtet
+// - Automatisches Build- und Kopier-Skript build_apk.bat für den APK-Export bereitgestellt
+// - GitHub Actions CI/CD-Workflow (.github/workflows/build-apk.yml) für automatische APK-Erstellung in der Cloud konfiguriert
+
+// Version v0.1.001
+// - In-App Browser mit automatischer Video-Erkennung und In-Video Checkbox-Overlay implementiert
+// - 5-Stunden Offline-Puffer mit automatischer Dateibereinigung nach Ablauf der TTL hinzugefügt
+// - Dauerhafter Verlauf sortiert nach Mutter-Seiten (Host/Domain) mit 'Erneut reinladen'-Funktion integriert
+// - Android Share-Target für geteilte Links aus externen Browsern (Chrome, Firefox etc.) eingerichtet
+// - Integrierter Offline-Videoplayer für lokale Wiedergabe ohne Internetverbindung bereitgestellt
+
+// Version v0.1.000
+// - Initial setup of the project.
