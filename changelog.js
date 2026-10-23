@@ -1,3 +1,7 @@
+// Version v0.1.014
+// - ANR- & App-Hänger ('Puff-er reagiert nicht') vollständig beseitigt: MutationObserver entprellt (1200ms Debounce) und Script-Scan-Begrenzung verhindert CPU-Überlastung im WebView
+// - Beseitigung von Layout-Thrashing: window.getComputedStyle entfernt, um erzwungene synchrone Browser-Reflows zu unterbinden
+// 
 // Version v0.1.013
 // - HLS-Download-Absturz behoben: CDN-Token-Vererbung (_resolveHlsUrl) verhindert 403-Forbidden-Fehler bei relativen Segment- und fMP4-Init-URLs
 // - Blockierende CookieManager-Aufrufe entfernt: Vermeidet Deadlocks bei gleichzeitiger Größenanalyse mehrerer Videos
